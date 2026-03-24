@@ -1,42 +1,15 @@
-# アプリ名（あなたのアプリ名に合わせています）
 app = "yoshitoroid"
-primary_region = "nrt"
+primary_region = "nrt"  # 成田（東京近郊）が最速です
 
 [build]
-  # Dockerfileがない場合、自動でNode.jsとしてビルドされます
-
-[http_service]
-  internal_port = 8080
-  force_https = true
-  
-  # 【最重要】ここを false にしないと、誰もアクセスしていない時にボットが勝手に止まります
-  auto_stop_machines = false
-  
-  # インスタンスが落ちた時に自動で再起動するようにします
-  auto_start_machines = true
-  
-  # 最小の起動数を1に固定します
-  min_machines_running = 1
+  dockerfile = "Dockerfile"
 
 [vm]
-  # ボットを動かす最小構成（1CPU / 256MBメモリ）
+  # CPUは1つのままでOK。増やしてもラグは減りません。
   cpu_kind = "shared"
   cpus = 1
-  memory_mb = 256
+  # メモリ512MB。これが4連投時の「カクつき」を消す決定打です。
+  memory_mb = 512
 
-[[services]]
-  protocol = "tcp"
-  internal_port = 8080
-
-  [[services.ports]]
-    port = 80
-    handlers = ["http"]
-
-  [[services.ports]]
-    port = 443
-    handlers = ["tls", "http"]
-
-  [services.concurrency]
-    type = "connections"
-    hard_limit = 25
-    soft_limit = 20
+# 重要：[[services]] や [http_service] のブロックはすべて削除してください。
+# それらがあると、ボットに関係ないWeb用の待機プログラムが動いてラグの元になります。
