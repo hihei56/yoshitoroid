@@ -1,15 +1,19 @@
 app = "yoshitoroid"
-primary_region = "nrt"  # 成田（東京近郊）が最速です
+primary_region = "nrt"
 
 [build]
   dockerfile = "Dockerfile"
 
 [vm]
-  # CPUは1つのままでOK。増やしてもラグは減りません。
   cpu_kind = "shared"
   cpus = 1
-  # メモリ512MB。これが4連投時の「カクつき」を消す決定打です。
   memory_mb = 512
 
-# 重要：[[services]] や [http_service] のブロックはすべて削除してください。
-# それらがあると、ボットに関係ないWeb用の待機プログラムが動いてラグの元になります。
+# --- 🚀 多重起動を防ぐための追加設定 ---
+[deploy]
+  # 「新しいのを立ち上げてから古いのを消す」ではなく
+  # 「古いのを消してから新しいのを立ち上げる」設定に変えます
+  strategy = "immediate"
+
+# スラッシュコマンド等を使わないなら、以下の [http_service] は消したままでOKです。
+# もし残っているなら、全て削除してください。
