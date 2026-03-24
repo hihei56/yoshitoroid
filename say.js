@@ -9,11 +9,9 @@ async function handleSay(interaction) {
         return interaction.reply({ content: "Denied", flags: [MessageFlags.Ephemeral] });
     }
 
-    // 応答を爆速で消すためにフラグ設定
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
-        // Webhookの取得ロジック（ここも共通化するともっと速い）
         const webhooks = await channel.fetchWebhooks();
         let webhook = webhooks.find(wh => wh.owner.id === interaction.client.user.id);
         if (!webhook) webhook = await channel.createWebhook({ name: 'FastProxy' });

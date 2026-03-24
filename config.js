@@ -1,18 +1,17 @@
 const fs = require('fs');
-const path = require('path');
-const settingsPath = path.join(__dirname, 'settings.json');
+const SETTINGS_PATH = './settings.json';
 
 function getSettings() {
-    if (!fs.existsSync(settingsPath)) {
-        const defaultSettings = { allowedRoles: [], deniedRoles: [], allowedUsers: [], deniedUsers: [] };
-        fs.writeFileSync(settingsPath, JSON.stringify(defaultSettings, null, 2));
-        return defaultSettings;
+    if (!fs.existsSync(SETTINGS_PATH)) {
+        const initial = { deniedUsers: [] };
+        fs.writeFileSync(SETTINGS_PATH, JSON.stringify(initial, null, 2));
+        return initial;
     }
-    return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
 }
 
 function saveSettings(settings) {
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
 }
 
 module.exports = { getSettings, saveSettings };

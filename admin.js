@@ -1,21 +1,18 @@
 const { getSettings, saveSettings } = require('./config');
-const { MessageFlags } = require('discord.js');
 
 async function handleAdmin(interaction) {
-    if (!interaction.member.permissions.has('Administrator')) return;
-
-    const type = interaction.options.getString('type');
-    const targetId = interaction.options.getString('target_id');
+    if (!interaction.member.permissions.has('Administrator')) return interaction.reply('No perms');
+    const target = interaction.options.getUser('user');
     const action = interaction.options.getString('action');
     const settings = getSettings();
 
-    if (action === 'add') {
-        if (!settings[type].includes(targetId)) settings[type].push(targetId);
+    if (action === 'deny') {
+        if (!settings.deniedUsers.includes(target.id)) settings.deniedUsers.push(target.id);
     } else {
-        settings[type] = settings[type].filter(id => id !== targetId);
+        settings.deniedUsers = settings.deniedUsers.filter(id => id !== target.id);
     }
 
     saveSettings(settings);
-    await interaction.reply({ content: `Updated: ${type}`, flags: [MessageFlags.Ephemeral] });
+    await interaction.reply(`Done: ${action} ${target.username}`);
 }
 module.exports = { handleAdmin };
