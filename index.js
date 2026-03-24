@@ -1,3 +1,12 @@
+// 🚀 --- クラッシュ防止機構（エラーが出ても死んだふりして耐える） ---
+process.on('uncaughtException', (error) => {
+    console.error('[Uncaught Exception] 予期せぬエラー（Botは死にません）:', error);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('[Unhandled Rejection] 未処理のエラー:', reason);
+});
+// -------------------------------------------------------------------
+
 require('dotenv').config();
 // v14 の正規の読み込み方法
 const { 
