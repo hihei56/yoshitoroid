@@ -7,9 +7,9 @@ async function handleUpload(interaction) {
     
     try {
         await interaction.channel.send({ files: [file.url] });
-        await interaction.editReply('アップロード成功だもん！✨');
+        await interaction.editReply('アップロード');
     } catch (e) { 
-        await interaction.editReply('失敗だむみぃ…'); 
+        await interaction.editReply('アップロード失敗'); 
     }
 }
 module.exports = { handleUpload };

@@ -58,7 +58,7 @@ async function sendYumeNews(client) {
         console.log(`📊 [RateLimit] 残り: ${remaining}/1000回 (リセットまで: ${reset})`);
 
         const finalMessage = [
-            `🕒 **棄民のための生存戦略時報（${new Date().getHours()}時）だもん！**`,
+            `🕒 **棄民のための生存戦略時報（${new Date().getHours()}時）だよぉ🤥💢！**`,
             displayLinks,
             `---`,
             res.data.choices[0].message.content
