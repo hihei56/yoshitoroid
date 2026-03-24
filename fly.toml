@@ -1,0 +1,42 @@
+# アプリ名（あなたのアプリ名に合わせています）
+app = "yoshitoroid"
+primary_region = "nrt"
+
+[build]
+  # Dockerfileがない場合、自動でNode.jsとしてビルドされます
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  
+  # 【最重要】ここを false にしないと、誰もアクセスしていない時にボットが勝手に止まります
+  auto_stop_machines = false
+  
+  # インスタンスが落ちた時に自動で再起動するようにします
+  auto_start_machines = true
+  
+  # 最小の起動数を1に固定します
+  min_machines_running = 1
+
+[vm]
+  # ボットを動かす最小構成（1CPU / 256MBメモリ）
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
