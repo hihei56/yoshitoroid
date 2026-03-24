@@ -9,14 +9,30 @@ primary_region = "nrt"
   cpus = 1
   memory_mb = 512
 
-# 🔥 落ちても自動で蘇生する（不死鳥設定）
-[restart]
-  policy = "always"
-  retries = 3
-
-# 🔥 2重起動を絶対に許さない（スケール固定）
 [deploy]
   strategy = "immediate"
-  max_unavailable = 1
 
-# ※この下には絶対に何も書かない！（スリープの原因になるため）
+# 👇 メインプロセス定義（重要）
+[processes]
+  app = "node index.js"
+
+# 👇 HTTPダミー（スリープ防止の核）
+[[services]]
+  internal_port = 3000
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+
+  [[services.ports]]
+    port = 443
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+  # 👇 ヘルスチェック（安定性UP）
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
