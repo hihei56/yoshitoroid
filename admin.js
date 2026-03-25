@@ -1,18 +1,20 @@
-const { getSettings, saveSettings } = require('./config');
+const { updateModExcludeList } = require('./exclude_manager');
 
 async function handleAdmin(interaction) {
-    if (!interaction.member.permissions.has('Administrator')) return interaction.reply('No perms');
-    const target = interaction.options.getUser('user');
-    const action = interaction.options.getString('action');
-    const settings = getSettings();
+    // 管理者権限チェックは index.js 側で hasPermission を通っているため省略可
+    const sub = interaction.options.getSubcommand();
 
-    if (action === 'deny') {
-        if (!settings.deniedUsers.includes(target.id)) settings.deniedUsers.push(target.id);
-    } else {
-        settings.deniedUsers = settings.deniedUsers.filter(id => id !== target.id);
+    if (sub === 'mod_skip') {
+        const action = interaction.options.getString('action'); // 'add' or 'remove'
+        const targetUser = interaction.options.getUser('user');
+        
+        updateModExcludeList(targetUser.id, action);
+        
+        return interaction.reply({
+            content: `[ADMIN] ${targetUser.tag} を検閲例外リストに${action === 'add' ? '登録' : '解除'}しました。`,
+            flags: [64] // Ephemeral
+        });
     }
-
-    saveSettings(settings);
-    await interaction.reply(`Done: ${action} ${target.username}`);
 }
+
 module.exports = { handleAdmin };

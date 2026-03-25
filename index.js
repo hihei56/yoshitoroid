@@ -1,5 +1,4 @@
 // 🚀 --- クラッシュ防止機構 ---
-// 未処理のエラーでBotが落ちるのを防ぎます
 process.on('uncaughtException', (error) => {
     console.error('[Uncaught Exception]:', error);
 });
@@ -43,9 +42,7 @@ const ALLOWED_ROLES = ['1476944370694488134', '1478715790575538359'];
 
 function hasPermission(member) {
     if (!member) return false;
-    // サーバー管理者は無条件でパス
     if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
-    // 指定ロールを持っているか確認
     return ALLOWED_ROLES.some(roleId => member.roles.cache.has(roleId));
 }
 
@@ -53,7 +50,6 @@ function hasPermission(member) {
 client.once(Events.ClientReady, async (c) => {
     console.log(`✅ [Bot Ready] ${c.user.tag} 起動成功`);
 
-    // OpenAI SDK 接続診断
     try {
         const testClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
         await testClient.moderations.create({ input: "test" });
@@ -62,7 +58,6 @@ client.once(Events.ClientReady, async (c) => {
         console.error("❌ OpenAI Error:", err.message);
     }
 
-    // スケジューラー（時報＆ゆめちゃん襲来）の初期化
     initScheduler(client);
 });
 
@@ -70,10 +65,9 @@ client.once(Events.ClientReady, async (c) => {
 client.on(Events.MessageCreate, async (m) => {
     if (m.author.bot || !m.guild) return;
 
-    // 検閲パトロールの実行（非同期）
+    // 検閲パトロールの実行
     handleModerator(m).catch(err => console.error("[Mod Error]:", err));
 
-    // 権限のないユーザーからのメンションは無視
     if (m.mentions.has(client.user) && !hasPermission(m.member)) return;
 });
 
@@ -81,7 +75,6 @@ client.on(Events.MessageCreate, async (m) => {
 client.on(Events.InteractionCreate, async (i) => {
     if (!i.isChatInputCommand()) return;
 
-    // 実行者の権限チェック
     if (!hasPermission(i.member)) {
         return i.reply({
             content: "このボットを使用する権限がありません。",
@@ -90,7 +83,6 @@ client.on(Events.InteractionCreate, async (i) => {
     }
 
     try {
-        // コマンド分岐
         if (i.commandName === 'dice') await handleDeathmatch(i);
         if (i.commandName === 'say') await handleSay(i);
         if (i.commandName === 'admin') await handleAdmin(i);
@@ -100,14 +92,9 @@ client.on(Events.InteractionCreate, async (i) => {
     }
 });
 
-// 🛡️ Discord接続トラブル対策
 client.on("error", console.error);
 client.on("shardError", console.error);
-client.on("disconnect", () => {
-    console.log("⚠️ Discord切断 → 自動復帰を待機中");
-});
 
-// 🛑 プロセス終了時の安全なログアウト処理
 process.on("SIGINT", async () => {
     console.log("🛑 シャットダウン開始...");
     try {
@@ -125,14 +112,4 @@ require("http")
         console.log("🌐 HTTP Server Ready (Port: 3000)");
     });
 
-// 🧠 メモリ使用量の監視
-setInterval(() => {
-    const used = process.memoryUsage().rss / 1024 / 1024;
-    // デバッグモード時のみログ出力
-    if (process.env.DEBUG_MODE === 'true') {
-        console.log(`🧠 [DEBUG] Memory Usage: ${used.toFixed(2)} MB`);
-    }
-}, 60000);
-
-// 🚀 ログイン実行
 client.login(process.env.DISCORD_TOKEN);
