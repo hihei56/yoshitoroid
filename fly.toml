@@ -12,14 +12,13 @@ primary_region = "nrt"
 [deploy]
   strategy = "immediate"
 
-# 👇 メインプロセス定義（重要）
 [processes]
   app = "node index.js"
 
-# 👇 HTTPダミー（スリープ防止の核）
 [[services]]
   internal_port = 3000
   protocol = "tcp"
+  processes = ["app"]  # 👈 【追加】Fly.ioが怒っていた原因はこれが無かったからです！
 
   [[services.ports]]
     port = 80
@@ -32,7 +31,6 @@ primary_region = "nrt"
     hard_limit = 25
     soft_limit = 20
 
-  # 👇 ヘルスチェック（安定性UP）
   [[services.tcp_checks]]
     interval = "15s"
     timeout = "2s"
