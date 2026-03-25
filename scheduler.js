@@ -138,7 +138,7 @@ async function sendYumeNews(client) {
             .setFooter({ text: `ゆめちゃんの体内時計時報 (${hour}時)🤥` });
 
         const payload = {
-            content: `🕒 **${hour}時だよぉ。ジャップランドの末路でも見て落ち着きなよ🤥💢**`,
+            content: `🕒 **${hour}時だよぉ。🤥💢**`,
             embeds: [embed],
             username: 'ゆめちゃん🤥',
             avatarURL: CONFIG.YUME_AVATAR_URL
