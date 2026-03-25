@@ -1,6 +1,9 @@
 const { OpenAI } = require('openai');
 const { getModExcludeList } = require('./exclude_manager');
 
+// OpenAI インスタンスの固定化（効率化）
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
 const EXEMPT_ROLES = [
     '1486178659130933278', 
     '1477024387524857988', 
@@ -10,79 +13,76 @@ const EXEMPT_ROLES = [
 const webhookCache = new Map();
 
 /* =========================
-   🔥 NGワード（完全一致型）
+    🛡️ NGワード & 検知設定
 ========================= */
-const NG_WORDS = [
-    "ロリ","ろり","ﾛﾘ","ロリコン","幼女","幼男","児ポ","ペド",
-    "小学生","小学校","中学生","中学校",
-    "処女","童貞","エプスタイン"
-];
+const NG_WORDS = ["ロリ","ろり","ﾛﾘ","ロリコン","幼女","幼男","児ポ","ペド","小学生","小学校","中学生","中学校","処女","童貞","エプスタイン"];
+const NG_REGEX = new RegExp([
+    "(?:[0-9０-９]{1,2})(?:歳|才|さい)?",
+    "(?:一|二|三|四|五|六|七|八|九|十|十一|十二)(?:歳|才|さい)?",
+    "小[1-6]", "中[1-3]",
+    "😭","😋","🦀","🍽️","🍴","🍼","🎒","🏫","🧒","👧","👦"
+].join("|"), "i");
 
 /* =========================
-   🔥 年齢・補助検知
+    ✨ テキストのリコード（パージ）処理
 ========================= */
-const NG_REGEX = new RegExp(
-    [
-        "(?:[0-9０-９]{1,2})(?:歳|才|さい)?",   // 12歳 / 12
-        "(?:一|二|三|四|五|六|七|八|九|十|十一|十二)(?:歳|才|さい)?",
-        "小[1-6]",
-        "中[1-3]",
-        "😭","😋","🦀","🍽️","🍴","🍼","🎒","🏫","🧒","👧","👦"
-    ].join("|"),
-    "i"
-);
+function recodeText(text, isReplyParent = false) {
+    if (!text) return "";
+    let cleaned = text;
+
+    // 1. 自分へのメンションを削除 (文頭の @名前 等)
+    cleaned = cleaned.replace(/^@(?:\[[^\]]+\]\s*)?[^\s]+\s*/, "");
+
+    // 2. 警察・🚓 関連のキーワードを削除
+    const policePatterns = [/ら?警察いた/g, /警察/g, /🚓/g];
+    policePatterns.forEach(p => cleaned = cleaned.replace(p, ""));
+
+    // 3. リプライ親メッセージの場合は短く丸める（UI崩れ防止）
+    if (isReplyParent && cleaned.length > 100) {
+        cleaned = cleaned.substring(0, 97) + "...";
+    }
+
+    return cleaned.trim();
+}
 
 /* =========================
-   🔥 メイン処理
+    🔥 メイン処理
 ========================= */
 async function handleModerator(message) {
     if (!message.content || message.author.bot) return;
 
-    // 🛡️ 免除
+    // 🛡️ 免除チェック
     const isExempt =
         EXEMPT_ROLES.some(id => message.member?.roles.cache.has(id)) ||
         getModExcludeList().includes(message.author.id);
 
     if (isExempt) return;
 
-    // 🔧 前処理（回避対策）
-    const content = message.content
-        .toLowerCase()
-        .replace(/\s+/g, ""); // スペース除去
+    // 検知用正規化（スペース除去）
+    const normalizedContent = message.content.toLowerCase().replace(/\s+/g, "");
 
-    // 🔥 完全一致検知（含んでたら即アウト）
-    const hitWord =
-        NG_WORDS.some(w => content.includes(w)) ||
-        NG_REGEX.test(content);
+    const isHit = NG_WORDS.some(w => normalizedContent.includes(w)) || NG_REGEX.test(normalizedContent);
 
-    if (hitWord) {
-        await instantDeleteAndWebhook(message);
+    if (isHit) {
+        await instantDeleteAndRecode(message);
         return;
     }
 
-    /* =========================
-       🤖 AI判定（それ以外のみ）
-    ========================= */
+    // 🤖 AI判定
     try {
-        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-        const moderation = await openai.moderations.create({
-            input: message.content
-        });
-
+        const moderation = await openai.moderations.create({ input: message.content });
         if (moderation.results[0].flagged) {
-            await instantDeleteAndWebhook(message);
+            await instantDeleteAndRecode(message);
         }
-
     } catch (e) {
         console.error("[Moderator Error]:", e.message);
     }
 }
 
 /* =========================
-   🚓 削除＋Webhook再現
+    🚓 削除 ＋ リコード再送
 ========================= */
-async function instantDeleteAndWebhook(message) {
-    let finalContent = "";
+async function instantDeleteAndRecode(message) {
     const originalMsg = message;
 
     // 💀 即削除
@@ -90,55 +90,46 @@ async function instantDeleteAndWebhook(message) {
         await message.delete().catch(() => {});
     }
 
-    /* =========================
-       🔁 DiscordリプライUI再現
-    ========================= */
+    let finalContent = "";
+    const cleanSelfContent = recodeText(originalMsg.content);
+
+    // 🔁 リプライUIの構築
     if (originalMsg.reference?.messageId) {
         try {
             const repliedMsg = await originalMsg.channel.messages.fetch(originalMsg.reference.messageId);
-
+            const cleanParentContent = recodeText(repliedMsg.content, true);
             const jumpUrl = `https://discord.com/channels/${originalMsg.guildId}/${originalMsg.channelId}/${repliedMsg.id}`;
 
-            // 👇 UI再現（超重要）
-            finalContent =
-`> **Reply to:** <@${repliedMsg.author.id}>
-> ${repliedMsg.content}
-
-🚓 <@${originalMsg.author.id}> ${originalMsg.content}
-🔗 ${jumpUrl}`;
-
+            // 整形された引用UI
+            finalContent = `> **Reply to:** <@${repliedMsg.author.id}>\n> ${cleanParentContent}\n\n${cleanSelfContent}\n[Jump to Reply](${jumpUrl})`;
         } catch {
-            // fallback
-            finalContent = `🚓 <@${originalMsg.author.id}> ${originalMsg.content}`;
+            finalContent = cleanSelfContent;
         }
     } else {
-        finalContent = `🚓 <@${originalMsg.author.id}> ${originalMsg.content}`;
+        finalContent = cleanSelfContent;
     }
 
-    /* =========================
-       🔗 Webhook取得/作成
-    ========================= */
+    // 文字列が空になった場合のフォールバック
+    if (!finalContent) finalContent = "*(Message Removed)*";
+
+    // 🔗 Webhook 取得
     let webhook = webhookCache.get(message.channel.id);
-
     if (!webhook) {
-        const webhooks = await message.channel.fetchWebhooks();
-        webhook =
-            webhooks.find(w => w.token) ||
-            await message.channel.createWebhook({ name: '検閲Bot' });
-
-        webhookCache.set(message.channel.id, webhook);
+        try {
+            const webhooks = await message.channel.fetchWebhooks();
+            webhook = webhooks.find(w => w.token) || await message.channel.createWebhook({ name: 'Moderator' });
+            webhookCache.set(message.channel.id, webhook);
+        } catch (e) {
+            return console.error("Webhook Error:", e.message);
+        }
     }
 
-    /* =========================
-       🚀 送信（完全な擬似再現）
-    ========================= */
+    // 🚀 送信
     await webhook.send({
         content: finalContent,
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        allowedMentions: {
-            parse: ['users'] // @全体暴発防止
-        }
+        allowedMentions: { parse: [] } // @everyone, @here, @roles を完全に無効化
     });
 }
 
