@@ -12,7 +12,7 @@ const webhookCache = new Map();
 const CONFIG = {
     POSTED_LOG_PATH: path.join(__dirname, 'posted_news.json'),
     YUME_AVATAR_URL: 'https://emojis.wiki/thumbs/emojis/lying-face.webp',
-    ATTACK_CHANNEL_ID: '1476939503510884638',
+    ATTACK_CHANNEL_ID: '1477007377038315653',
     FEEDS: [
         "https://news.livedoor.com/topics/rss/dom.xml",
         "https://news.livedoor.com/topics/rss/ent.xml",
