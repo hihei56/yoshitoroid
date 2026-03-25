@@ -50,7 +50,7 @@ async function handleModerator(message) {
             const displayAvatar = message.member?.displayAvatarURL();
 
             await webhook.send({
-                content: `🚓 ${message.content}`,
+                content: ` ${message.content}`,
                 username: displayName,
                 avatarURL: displayAvatar,
             });
