@@ -2,12 +2,12 @@ const Parser = require('rss-parser');
 const { WebhookClient, EmbedBuilder } = require('discord.js');
 const he = require('he');
 const { OpenAI } = require('openai'); 
-const fs = require('fs'); // 🌟 ファイル保存用に追加
+const fs = require('fs');
 
 const parser = new Parser();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Webhookクライアント
+// Webhook
 const UNTAI = new WebhookClient({ url: process.env.UNTAI_WEBHOOK });
 const AI_WEBHOOKS = [
     new WebhookClient({ url: process.env.AI_WEBHOOK1 }),
@@ -15,146 +15,166 @@ const AI_WEBHOOKS = [
     new WebhookClient({ url: process.env.AI_WEBHOOK3 })
 ];
 
-const RSS_URL = "https://rss.app/feeds/tJs1z7BnamnE09pF.xml";
+// 🔥 Nitterフォールバック
+const RSS_URLS = [
+    "https://nitter.net/electlone/rss",
+    "https://nitter.tiekoetter.com/electlone/rss",
+    "https://nitter.poast.org/electlone/rss"
+];
 
-// 🌟 再起動対策：送信済みリンクをファイルに記録する仕組み
-// Fly.io上なら '/data' フォルダを使い、ローカルなら今のフォルダを使う
+// 永続化
 const SEEN_LINKS_FILE = process.env.FLY_APP_NAME 
     ? '/data/seen_links.json' 
     : './seen_links.json';
-let seenLinks = [];
 
-// 起動時にファイルがあれば読み込む
+let seenLinks = [];
 if (fs.existsSync(SEEN_LINKS_FILE)) {
     seenLinks = JSON.parse(fs.readFileSync(SEEN_LINKS_FILE, 'utf8'));
 }
 
-// 記録をファイルに保存する関数
 function saveSeenLinks() {
-    // ファイルが大きくなりすぎないよう、最新の50件だけ残す
     if (seenLinks.length > 50) {
         seenLinks = seenLinks.slice(-50);
     }
     fs.writeFileSync(SEEN_LINKS_FILE, JSON.stringify(seenLinks, null, 2));
 }
 
-// 画像URLを抜き出す関数
+// 画像取得
 function findImageUrl(item) {
-    if (item.enclosure && item.enclosure.url && item.enclosure.type.startsWith('image/')) {
+    if (item.enclosure?.url && item.enclosure.type?.startsWith('image/')) {
         return item.enclosure.url;
     }
-    if (item.content) {
-        const imgMatch = item.content.match(/<img[^>]+src="([^">]+)"/);
-        if (imgMatch) return imgMatch[1];
-    }
-    if (item.contentSnippet) {
-        const imgMatch = item.contentSnippet.match(/<img[^>]+src="([^">]+)"/);
-        if (imgMatch) return imgMatch[1];
+    const html = item.content || item.contentSnippet;
+    if (html) {
+        const match = html.match(/<img[^>]+src="([^">]+)"/);
+        if (match) return match[1];
     }
     return null;
 }
 
-// 汎用AI返信生成関数
+// AI返信
 async function generateAIReply(text) {
     try {
-        const response = await openai.chat.completions.create({
+        const res = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
-                { role: "system", content: "あなたは親しみやすいキャラクターです。以下のツイート内容に対して、軽く短めに（1〜2文程度で）相槌や感想を返信してください。" },
-                { role: "user", content: `ツイート内容:\n${text}` }
-            ],
-            max_tokens: 100
+                { role: "system", content: "短く自然な一言コメントを返してください（1〜2文）" },
+                { role: "user", content: text }
+            ]
         });
-        return response.choices[0].message.content.trim();
-    } catch (err) {
-        console.error("❌ AI返信生成失敗:", err);
-        return "（返信の生成に失敗しました…）";
+        return res.choices[0].message.content.trim();
+    } catch (e) {
+        console.error("AI失敗:", e.message);
+        return "（返信失敗）";
     }
 }
 
-// ツイート投稿 ＆ AIスレッド返信
+// 投稿処理
 async function postTweet(item, client) {
-    let rawContent = he.decode(item.contentSnippet || item.title || "");
+    let raw = he.decode(item.contentSnippet || item.title || "");
     const imageUrl = findImageUrl(item);
 
-    // --- 引用リツイート＆URLのクリーニング処理 ---
-    const quoteRegex = /https?:\/\/(?:twitter\.com|x\.com)\/[a-zA-Z0-9_]+\/status\/\d+/g;
-    const quoteMatches = rawContent.match(quoteRegex);
-    
-    let quoteAddition = "";
-    if (quoteMatches) {
-        quoteMatches.forEach(url => {
-            rawContent = rawContent.replace(url, '').trim();
-        });
-        const quoteUrl = quoteMatches[quoteMatches.length - 1];
-        quoteAddition = `\n\n> 🔁 **引用ポスト**\n> [🔗 引用元を見る](${quoteUrl})`;
+    // URL掃除
+    const quoteRegex = /https?:\/\/(?:twitter\.com|x\.com)\/\S+/g;
+    const quotes = raw.match(quoteRegex);
+
+    let quoteBlock = "";
+    if (quotes) {
+        quotes.forEach(url => raw = raw.replace(url, ""));
+        quoteBlock = `\n\n> 🔁 引用\n> ${quotes[quotes.length - 1]}`;
     }
 
-    rawContent = rawContent.replace(/https:\/\/t\.co\/\w+\s*$/, '').trim();
-    const finalContent = rawContent + quoteAddition;
-    // ---------------------------------------------
+    raw = raw.replace(/https:\/\/t\.co\/\w+/g, "").trim();
+    const content = raw + quoteBlock;
 
     const embed = new EmbedBuilder()
         .setColor('#1DA1F2')
-        .setAuthor({ name: `electlone`, url: `https://x.com/electlone` })
-        .setTitle("🔗 ポストをX(Twitter)で見る")
+        .setAuthor({ name: "electlone", url: "https://x.com/electlone" })
+        .setTitle("🔗 Xで見る")
         .setURL(item.link)
-        .setFooter({ text: `不対電子研究所` });
+        .setFooter({ text: "不対電子研究所" });
 
     if (item.isoDate) embed.setTimestamp(new Date(item.isoDate));
 
     try {
-        const apiMessage = await UNTAI.send({
-            content: finalContent, 
-            files: imageUrl ? [{ attachment: imageUrl }] : [],
+        const msg = await UNTAI.send({
+            content,
             embeds: [embed],
-            username: "不対電子", 
+            files: imageUrl ? [imageUrl] : [],
+            username: "不対電子",
             fetchReply: true
         });
 
-        if (client) {
-            const channelId = apiMessage.channel_id || apiMessage.channelId;
-            const channel = await client.channels.fetch(channelId);
-            const msg = await channel.messages.fetch(apiMessage.id);
+        if (!client) return;
 
-            const thread = await msg.startThread({
-                name: "不対電子理論コメント欄",
-                autoArchiveDuration: 60
-            });
-            
-            const aiWebhook = AI_WEBHOOKS[Math.floor(Math.random() * AI_WEBHOOKS.length)];
-            const aiReply = await generateAIReply(rawContent); 
-            
-            await aiWebhook.send({
-                content: aiReply,
-                threadId: thread.id
-            });
+        const channel = await client.channels.fetch(msg.channel_id);
+        const message = await channel.messages.fetch(msg.id);
 
-            console.log("💬 ツイート投稿 ＆ ランダムAIからの返信完了！");
+        // 🔥 スレッド作成
+        const thread = await message.startThread({
+            name: "コメント欄",
+            autoArchiveDuration: 60
+        });
 
-            // 🌟 送信が無事に終わったら、そのリンクを記録してファイルに保存
-            seenLinks.push(item.link);
-            saveSeenLinks();
-        }
-    } catch (err) {
-        console.error("❌ RSS取得/投稿失敗:", err);
+        // AI返信
+        const aiWebhook = AI_WEBHOOKS[Math.floor(Math.random() * AI_WEBHOOKS.length)];
+        const reply = await generateAIReply(raw);
+
+        await aiWebhook.send({
+            content: reply,
+            threadId: thread.id
+        });
+
+        console.log("✅ 投稿 + AI返信");
+
+        seenLinks.push(item.link);
+        saveSeenLinks();
+
+    } catch (e) {
+        console.error("投稿失敗:", e.message);
     }
 }
 
+// 🔥 クールダウン付きRSS取得
+let lastFail = 0;
+
 async function checkRSS(client) {
-    try {
-        const feed = await parser.parseURL(RSS_URL);
-        
-        // 🌟 ファイルに保存されているリンク（seenLinks）に含まれていないかチェック
-        const candidates = feed.items.filter(item => !seenLinks.includes(item.link) && (item.contentSnippet?.length || item.title?.length || 0) > 50);
+    const now = Date.now();
 
-        if (!candidates.length) return;
-
-        const tweet = candidates[Math.floor(Math.random() * candidates.length)];
-        await postTweet(tweet, client);
-    } catch (err) {
-        console.error("❌ RSS取得失敗:", err);
+    if (now - lastFail < 5 * 60 * 1000) {
+        console.log("⏸ クールダウン");
+        return;
     }
+
+    let feed = null;
+
+    for (const url of RSS_URLS) {
+        try {
+            feed = await parser.parseURL(url);
+            console.log("✅ 成功:", url);
+            break;
+        } catch {
+            console.log("❌ 失敗:", url);
+        }
+    }
+
+    if (!feed) {
+        lastFail = now;
+        console.log("💀 全滅");
+        return;
+    }
+
+    const candidates = feed.items.filter(i =>
+        !seenLinks.includes(i.link) &&
+        (i.contentSnippet?.length || i.title?.length || 0) > 30
+    );
+
+    if (!candidates.length) return;
+
+    // 🔥 最新1件（おすすめ）
+    const tweet = candidates[0];
+
+    await postTweet(tweet, client);
 }
 
 module.exports = { checkRSS };
