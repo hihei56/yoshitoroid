@@ -11,9 +11,12 @@ const { handleDeathmatch } = require('./deathmatch');
 const { handleModerator } = require('./moderator');
 const { handleAdmin } = require('./admin');
 const { handleJoker } = require('./joker');
-
-// RSS Bot
 const { checkRSS } = require('./rssBot');
+const { postRanking, handleRanking } = require('./ranking');
+
+// デバッグモード（.envに DEBUG_MODE=true で有効）
+const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
+if (DEBUG_MODE) console.log('🐛 [Debug] デバッグモード有効 - ランキング送信ON');
 
 const client = new Client({
     intents: [
@@ -41,9 +44,16 @@ client.once(Events.ClientReady, async c => {
 
     // RSSチェック（起動時）
     checkRSS(client);
-
-    // 5分ごとにRSSチェック
+    // 30分ごとにRSSチェック
     setInterval(() => checkRSS(client), 30 * 60 * 1000);
+
+    // ランキング（デバッグモード時のみ送信）
+    if (DEBUG_MODE) {
+        postRanking(client).catch(e => console.error('[Ranking] 起動時エラー:', e));
+        setInterval(() => {
+            postRanking(client).catch(e => console.error('[Ranking] 定期更新エラー:', e));
+        }, 60 * 60 * 1000);
+    }
 });
 
 // メッセージ監視（モデレーター系）
@@ -61,10 +71,14 @@ client.on(Events.InteractionCreate, async i => {
     }
 
     try {
-        if (i.commandName === 'dice') await handleDeathmatch(i);
-        if (i.commandName === 'say') await handleSay(i);
-        if (i.commandName === 'admin') await handleAdmin(i);
-        if (i.commandName === 'joker') await handleJoker(i);
+        if (i.commandName === 'dice')    await handleDeathmatch(i);
+        if (i.commandName === 'say')     await handleSay(i);
+        if (i.commandName === 'admin')   await handleAdmin(i);
+        if (i.commandName === 'joker')   await handleJoker(i);
+        if (i.commandName === 'ranking') {
+            if (!DEBUG_MODE) return i.reply({ content: '⚠️ デバッグモードが無効です。`.env` に `DEBUG_MODE=true` を追加してください。', ephemeral: true });
+            await handleRanking(i);
+        }
     } catch (error) {
         console.error("Interaction Error:", error);
     }

@@ -12,7 +12,7 @@ const webhookCache = new Map();
 const CONFIG = {
     POSTED_LOG_PATH: path.join(__dirname, 'posted_news.json'),
     YUME_AVATAR_URL: 'https://emojis.wiki/thumbs/emojis/lying-face.webp',
-    ATTACK_CHANNEL_ID: '1477007377038315653',
+    ATTACK_CHANNEL_ID: '1476939503510884638',
     FEEDS: [
         "https://news.livedoor.com/topics/rss/dom.xml",
         "https://news.livedoor.com/topics/rss/ent.xml",
@@ -130,6 +130,13 @@ async function sendYumeNews(client) {
         const now = new Date();
         const hour = now.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour: "numeric", hour12: false });
 
+        // --- 修正箇所：スレッド作成とスレッド内送信 ---
+        const thread = await channel.threads.create({
+            name: `🤥 ${targetItem.title.substring(0, 80)}`,
+            autoArchiveDuration: 60,
+            reason: 'ゆめちゃん時報スレッド',
+        });
+
         const embed = new EmbedBuilder()
             .setTitle(targetItem.title)
             .setURL(targetItem.link)
@@ -141,12 +148,13 @@ async function sendYumeNews(client) {
             content: `🕒 **${hour}時だよぉ。🤥💢**`,
             embeds: [embed],
             username: 'ゆめちゃん🤥',
-            avatarURL: CONFIG.YUME_AVATAR_URL
+            avatarURL: CONFIG.YUME_AVATAR_URL,
+            threadId: thread.id // スレッド内へ
         };
 
         const webhook = await getWebhook(channel);
         if (webhook) await webhook.send(payload);
-        else await channel.send({ content: payload.content, embeds: payload.embeds });
+        else await thread.send({ content: payload.content, embeds: payload.embeds });
 
         savePostedUrl(targetItem.link);
     } catch (e) { console.error("News Error:", e.message); }

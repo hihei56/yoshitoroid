@@ -16,16 +16,16 @@ const commands = [
     new SlashCommandBuilder()
         .setName('say')
         .setDescription('指定した内容をボットに喋らせます。')
-        .addStringOption(option => 
+        .addStringOption(option =>
             option.setName('content')
                 .setDescription('メッセージ内容（必須）')
                 .setRequired(true)
         )
-        .addAttachmentOption(option => 
+        .addAttachmentOption(option =>
             option.setName('file')
                 .setDescription('添付画像')
         )
-        .addStringOption(option => 
+        .addStringOption(option =>
             option.setName('reply_link')
                 .setDescription('返信先メッセージのリンク')
         ),
@@ -72,6 +72,12 @@ const commands = [
                         .setRequired(true)
                 )
         ),
+
+    // 5. ランキング（デバッグモード時のみ有効）
+    new SlashCommandBuilder()
+        .setName('ranking')
+        .setDescription('配信者の同時接続数ランキングを今すぐ更新する（デバッグモード限定）'),
+
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -79,19 +85,16 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 (async () => {
     try {
         console.log('🧹 古いグローバルコマンドを掃除中...');
-        // 一度グローバル登録を空にして重複を解消
         await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [] });
 
         console.log('🚀 最新のコマンドを登録中...');
         if (process.env.GUILD_ID) {
-            // サーバー固有の登録
             await rest.put(
                 Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
                 { body: commands }
             );
             console.log('✅ サーバー限定で登録完了');
         } else {
-            // グローバル登録
             await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
             console.log('✅ グローバルで登録完了');
         }
