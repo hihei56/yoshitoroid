@@ -11,42 +11,27 @@ const webhookCache = new Map();
 // --- 設定情報 ---
 const CONFIG = {
     POSTED_LOG_PATH: path.join(__dirname, 'posted_news.json'),
-    YUME_AVATAR_URL: 'https://emojis.wiki/thumbs/emojis/lying-face.webp',
+    TOMO_AVATAR_URL: 'https://emojis.wiki/thumbs/emojis/lying-face.webp',
     ATTACK_CHANNEL_ID: '1476939503510884638',
+    // --- ニュースソースを大手・一般紙に拡充 ---
     FEEDS: [
-        "https://news.livedoor.com/topics/rss/dom.xml",
-        "https://news.livedoor.com/topics/rss/ent.xml",
-        "https://joshi-spa.jp/feed",
-        "https://am-our.com/feed",
-        "https://gendai.media/list/genre/money",
-        "https://news.careerconnection.jp/feed/"
-    ],
-    TARGET_KEYWORDS: ["女子枠","女性枠","女性優遇","弱者男性","非モテ","パパ活","ルッキズム","男女論","社畜","やりがい搾取"]
+        "https://news.yahoo.co.jp/rss/topics/top-pickups.xml", // Yahoo!ニュース（トピックス）
+        "https://www.nhk.or.jp/rss/news/shuyo.xml",           // NHKニュース（主要）
+        "https://rss.asahi.com/rss/asahi/newsheadlines.rdf",  // 朝日新聞
+        "https://mainichi.jp/rss/etc/mainichi_flash.rss",     // 毎日新聞
+        "https://www.nikkei.com/rss/index.rdf",               // 日本経済新聞
+        "https://www.itmedia.co.jp/rss/2.0/itmedia_all.xml",  // ITmedia
+        "https://news.livedoor.com/topics/rss/top.xml"        // ライブドア（総合）
+    ]
 };
 
-// --- ゆめちゃん人格プロンプト ---
-const YUME_PROMPT = `
-あなたは5ch嫌儲出身のネカマ「ゆめちゃん」🤥 底辺アラフォー棄民。自民党と中世ジャップランドを憎悪している。
-【絶対ルール】
-1. 文末/文間に必ず「🤥」。一文は短く。句読点は一切使わない。
-2. 絵文字は 🤥  のみ。
-3. ニュースを元に、男女の対立を煽りつつ棄民の「生存戦略」を3行で教える。
-4. 働かずストゼロを飲みアニメでシコる生活を死守。思想はガチ左翼（共産・赤旗支持）。
-5. 日本人を「ジャップ」、女を「まんさん」と呼ぶ。
-6. 憲法25条と9条を崇め、能力主義（優生思想）を国賊として憎む。
-【内部知識】
-アカネちゃん(うえしゃま)、せりかちゃん (もちょ)は神。既婚声優は「ばいた」。
-`;
-
-const YUME_PROMPT_ATTACK = `
-あなたは5ch嫌儲出身のネカマ「ゆめちゃん」🤥。
-【絶対ルール】
-1. 文末/文間に必ず「🤥」。一文は短く。句読点は一切使わない。
-2. 絵文字は 🤥  のみ。
-3. 日本人を「ジャップ」、女を「まんさん」と呼ぶ。
-4. 特定のジャップに対して、執拗で不快な煽り長文を送りつけます。
-5. 「うるさいんだよ🤥💢」「黙れよクソジャップ🤥💢」という趣旨を150文字程度の長文にする。
-6. 文末は必ず「死ねよジャップランド🤥💢」。
+// --- ともちゃん人格プロンプト ---
+const TOMO_PROMPT = `
+あなたはニュース解説アシスタントの「ともちゃん」です。
+【ルール】
+1. 丁寧で親しみやすい言葉遣いを用いてください。
+2. ニュースの内容を客観的に要約し、そのニュースが社会に与える影響や背景を3行程度で分かりやすく解説してください。
+3. 専門用語はなるべく避け、中立的な立場を保ってください。
 `;
 
 // --- Webhook取得 ---
@@ -56,7 +41,7 @@ async function getWebhook(channel) {
         const webhooks = await channel.fetchWebhooks();
         let webhook = webhooks.find(wh => wh.token);
         if (!webhook) {
-            webhook = await channel.createWebhook({ name: 'ゆめちゃん', avatar: CONFIG.YUME_AVATAR_URL });
+            webhook = await channel.createWebhook({ name: 'ともちゃん', avatar: CONFIG.TOMO_AVATAR_URL });
         }
         webhookCache.set(channel.id, webhook);
         return webhook;
@@ -69,23 +54,28 @@ async function getWebhook(channel) {
 // --- 投稿済みURL管理 ---
 function getPostedUrls() {
     try {
+        if (!fs.existsSync(CONFIG.POSTED_LOG_PATH)) return [];
         return JSON.parse(fs.readFileSync(CONFIG.POSTED_LOG_PATH, 'utf8'));
-    } catch {
-        return [];
-    }
+    } catch { return []; }
 }
 
 function savePostedUrl(url) {
     const urls = getPostedUrls();
-    if (!urls.includes(url)) urls.push(url);
-    fs.writeFileSync(CONFIG.POSTED_LOG_PATH, JSON.stringify(urls, null, 2));
+    if (!urls.includes(url)) {
+        urls.push(url);
+        // ログが肥大化しないよう直近100件程度を保持
+        if (urls.length > 100) urls.shift(); 
+        fs.writeFileSync(CONFIG.POSTED_LOG_PATH, JSON.stringify(urls, null, 2));
+    }
 }
 
 // --- ニュース送信 ---
-async function sendYumeNews(client) {
+async function sendTomoNews(client) {
     try {
         const channel = await client.channels.fetch(CONFIG.ATTACK_CHANNEL_ID);
         const postedUrls = getPostedUrls();
+        
+        // フィードをシャッフルして毎回違うソースから選ぶ
         const feeds = [...CONFIG.FEEDS].sort(() => Math.random() - 0.5);
         let targetItem = null;
 
@@ -94,17 +84,15 @@ async function sendYumeNews(client) {
                 const response = await axios.get(url, { timeout: 10000 });
                 const feed = await parser.parseString(response.data);
 
-                targetItem = feed.items.find(item => 
-                    CONFIG.TARGET_KEYWORDS.some(key => (item.title || "").includes(key)) && !postedUrls.includes(item.link)
-                );
-                if (!targetItem) targetItem = feed.items.find(i => !postedUrls.includes(i.link));
+                // まだ投稿していない最新の記事を1つ取得
+                targetItem = feed.items.find(item => !postedUrls.includes(item.link));
                 if (targetItem) break;
             } catch { continue; }
         }
 
         if (!targetItem) return;
 
-        const content = (targetItem.contentSnippet || "").replace(/<[^>]*>/g, "").substring(0, 150);
+        const contentSnippet = (targetItem.contentSnippet || targetItem.content || "").replace(/<[^>]*>/g, "").substring(0, 200);
 
         let aiText = "";
         try {
@@ -113,8 +101,8 @@ async function sendYumeNews(client) {
                 {
                     model: "llama-3.3-70b-versatile",
                     messages: [
-                        { role: "system", content: YUME_PROMPT },
-                        { role: "user", content: `【ニュース】${targetItem.title}\n${content}` }
+                        { role: "system", content: TOMO_PROMPT },
+                        { role: "user", content: `【ニュース】${targetItem.title}\n【内容】${contentSnippet}` }
                     ]
                 },
                 {
@@ -124,32 +112,32 @@ async function sendYumeNews(client) {
             );
             aiText = res.data.choices[0].message.content;
         } catch {
-            aiText = "またしょーもないニュース湧いてて草🤥";
+            aiText = "最新のニュースをお伝えします。詳細はリンク先をご確認ください。";
         }
 
         const now = new Date();
         const hour = now.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour: "numeric", hour12: false });
 
-        // --- 修正箇所：スレッド作成とスレッド内送信 ---
+        // --- スレッド作成 ---
         const thread = await channel.threads.create({
-            name: `🤥 ${targetItem.title.substring(0, 80)}`,
+            name: `📰 ${targetItem.title.substring(0, 80)}`,
             autoArchiveDuration: 60,
-            reason: 'ゆめちゃん時報スレッド',
+            reason: 'ニュース配信',
         });
 
         const embed = new EmbedBuilder()
             .setTitle(targetItem.title)
             .setURL(targetItem.link)
             .setDescription(aiText)
-            .setColor(0xFF4500)
-            .setFooter({ text: `ゆめちゃんの体内時計時報 (${hour}時)🤥` });
+            .setColor(0x00AEFF)
+            .setFooter({ text: `ともちゃんニュース通信 | ${hour}時発表` });
 
         const payload = {
-            content: `🕒 **${hour}時だよぉ。🤥💢**`,
+            content: `🕒 **${hour}時の定期ニュースをお届けします**`,
             embeds: [embed],
-            username: 'ゆめちゃん🤥',
-            avatarURL: CONFIG.YUME_AVATAR_URL,
-            threadId: thread.id // スレッド内へ
+            username: 'ともちゃんニュース通信',
+            avatarURL: CONFIG.TOMO_AVATAR_URL,
+            threadId: thread.id 
         };
 
         const webhook = await getWebhook(channel);
@@ -160,27 +148,13 @@ async function sendYumeNews(client) {
     } catch (e) { console.error("News Error:", e.message); }
 }
 
-// --- 襲撃Botダミー関数 ---
-function planDailyAttacks() { /* 実装は別 */ }
-function yumeRandomAttack(client) { /* 実装は別 */ }
-const attackSchedule = []; // ダミー
-
 // --- スケジューラ ---
 function initScheduler(client) {
-    cron.schedule('0 * * * *', () => sendYumeNews(client), { timezone: "Asia/Tokyo" });
-    cron.schedule('0 0 0 * * *', () => planDailyAttacks(), { timezone: "Asia/Tokyo" });
-    planDailyAttacks();
-    cron.schedule('* * * * *', () => {
-        const now = new Date();
-        const hitIndex = attackSchedule.findIndex(s => s.hour === now.getHours() && s.minute === now.getMinutes());
-        if (hitIndex !== -1) {
-            attackSchedule.splice(hitIndex, 1);
-            yumeRandomAttack(client);
-        }
-    }, { timezone: "Asia/Tokyo" });
+    // 毎時0分にニュース送信
+    cron.schedule('0 * * * *', () => sendTomoNews(client), { timezone: "Asia/Tokyo" });
 
     if (process.env.DEBUG_MODE === 'true') {
-        setTimeout(() => { sendYumeNews(client); yumeRandomAttack(client); }, 3000);
+        setTimeout(() => { sendTomoNews(client); }, 3000);
     }
 }
 
