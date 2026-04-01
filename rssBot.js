@@ -1,11 +1,15 @@
 const Parser = require('rss-parser');
 const { WebhookClient, EmbedBuilder } = require('discord.js');
 const he = require('he');
-const { OpenAI } = require('openai'); 
+const { OpenAI } = require('openai');
+
+const openai = new OpenAI({
+    apiKey: process.env.GROQ_API_KEY,
+    baseURL: "https://api.groq.com/openai/v1"
+});
 const fs = require('fs');
 
 const parser = new Parser();
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Webhook
 const UNTAI = new WebhookClient({ url: process.env.UNTAI_WEBHOOK });
@@ -56,19 +60,24 @@ function findImageUrl(item) {
 async function generateAIReply(text) {
     try {
         const res = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: "llama-3.1-8b-instant",
             messages: [
-                { role: "system", content: "短く自然な一言コメントを返してください（1〜2文）" },
+                {
+                    role: "system",
+                    content: "投稿内容に対して、軽い批評や分析をする一言コメントを返してください。断定しすぎず、少し距離を置いた視点で（1〜2文）"
+                },
                 { role: "user", content: text }
-            ]
+            ],
+            max_tokens: 80
         });
+
         return res.choices[0].message.content.trim();
+
     } catch (e) {
-        console.error("AI失敗:", e.message);
-        return "（返信失敗）";
+        console.error("AI失敗:", e);
+        return null;
     }
 }
-
 // 投稿処理
 async function postTweet(item, client) {
     let raw = he.decode(item.contentSnippet || item.title || "");
@@ -120,10 +129,12 @@ async function postTweet(item, client) {
         const aiWebhook = AI_WEBHOOKS[Math.floor(Math.random() * AI_WEBHOOKS.length)];
         const reply = await generateAIReply(raw);
 
-        await aiWebhook.send({
-            content: reply,
-            threadId: thread.id
-        });
+if (reply && reply.length > 0) {
+    await aiWebhook.send({
+        content: reply,
+        threadId: thread.id
+    });
+}
 
         console.log("✅ 投稿 + AI返信");
 
