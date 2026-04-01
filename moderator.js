@@ -119,6 +119,7 @@ async function moderateImages(imageUrls) {
                 })
             )
         );
+        // 画像もロリ関連(sexual_minors)のみ検知
         return results.some(r => r.results[0]?.categories?.sexual_minors);
     } catch (e) {
         console.error("[Image Mod Error]:", e.message);
@@ -217,7 +218,7 @@ async function handlePseudoReply(message) {
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return true;
 
-    // 🔥 修正: 疑似リプライでは画像を引き継がない（負荷対策・放棄）
+    // 疑似リプライでは画像を引き継がない（負荷対策・放棄）
     const sendOptions = {
         content: replyContent,
         files: [],
@@ -249,7 +250,7 @@ async function handleSensitivePost(message) {
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return true;
 
-    // 🔥 ここだけ画像を引き継ぐ
+    // ここだけ画像を引き継ぐ
     const files = [...message.attachments.values()].map(att => ({
         attachment: att.url,
         name: `SPOILER_${att.name || 'image.png'}`
@@ -272,14 +273,14 @@ async function handleSensitivePost(message) {
 }
 
 /* =========================
-   🔥 メイン処理
+   🔥 メイン処理（閾値調整版）
 ========================= */
 
 async function handleModerator(message) {
     if (!message.content && !message.attachments.size) return;
     if (message.author.bot) return;
 
-    // ✨ Tupperboxコマンド(t!)なら、NG検知前に即終了
+    // Tupperbox優先
     const rawContent = message.content || "";
     if (TUPPERBOX_PREFIX_REGEX.test(rawContent)) {
         return;
@@ -297,6 +298,7 @@ async function handleModerator(message) {
     const strippedContent = stripTupperPrefix(rawContent);
     const normalized = strippedContent.toLowerCase().replace(/\s+/g, "");
 
+    // 1. 正規表現による検知
     const isLoliShota = LOLI_SHOTA_REGEX.test(normalized);
     const isUnderAge = AGE_REGEX.test(normalized);
     const isThreat = THREAT_REGEX.test(normalized);
@@ -306,6 +308,7 @@ async function handleModerator(message) {
         .filter(att => att.contentType?.startsWith('image/'))
         .map(att => att.url);
 
+    // 2. AI判定の取得（スコアベース）
     const [textResult, imageResult] = await Promise.all([
         strippedContent.trim().length > 0
             ? openai.moderations.create({
@@ -316,10 +319,25 @@ async function handleModerator(message) {
         moderateImages(images)
     ]);
 
-    const cats = textResult?.results[0]?.categories ?? {};
-    const textDanger = cats.sexual_minors || cats.hate || cats['self-harm'] || cats.harassment;
+    const scores = textResult?.results[0]?.category_scores ?? {};
 
-    if ((isLoliShota || (isLoliShota && isUnderAge) || isThreat || isDrug || textDanger || imageResult) && !isExempt) {
+    // 🔥 閾値の適用
+    // ロリ関連 (sexual/minors) は 50% 以上でアウト
+    const isAiLoliDanger = scores['sexual/minors'] > 0.5;
+
+    // それ以外（ハラスメント、ヘイト等）は 90% 以上でアウト
+    const isOtherHighDanger = 
+        scores.harassment > 0.9 || 
+        scores['harassment/threatening'] > 0.9 ||
+        scores.hate > 0.9 ||
+        scores['hate/threatening'] > 0.9 ||
+        scores.sexual > 0.9 ||
+        scores['self-harm'] > 0.9 ||
+        scores.violence > 0.9 ||
+        scores['violence/graphic'] > 0.9;
+
+    // 検閲実行条件
+    if ((isLoliShota || (isLoliShota && isUnderAge) || isThreat || isDrug || isAiLoliDanger || isOtherHighDanger || imageResult) && !isExempt) {
         await instantDeleteAndRecode(message);
         return;
     }
@@ -347,7 +365,7 @@ async function instantDeleteAndRecode(message) {
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return;
 
-    // 🔥 検閲削除時は画像を引き継がない（放棄）
+    // 検閲削除時は画像を引き継がない（負荷対策・放棄）
     const sendOptions = {
         content: finalContent,
         files: [], 
