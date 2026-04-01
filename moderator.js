@@ -1,7 +1,14 @@
 const { OpenAI } = require('openai');
+const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
 const { getModExcludeList } = require('./exclude_manager');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// 起動時にUSER_ID_KEYチェック
+if (!process.env.USER_ID_KEY) {
+    console.error('❌ [Fatal] USER_ID_KEY が .env に設定されていません。Botを終了します。');
+    process.exit(1);
+}
 
 const EXEMPT_ROLES = [
     '1486178659130933278',
@@ -14,7 +21,6 @@ const SENSITIVE_ALLOWED_ROLES = [
     '1477024387524857988',
 ];
 
-// 🔥 疑似リプライやモデレーションを実行できる権限ロール (index.jsと同期)
 const ALLOWED_ROLES = ['1476944370694488134', '1478715790575538359'];
 
 const SENSITIVE_TRIGGER_EMOJI = '👶';
@@ -24,20 +30,23 @@ const TUPPERBOX_APP_ID = '431544605209788416';
 const TUPPERBOX_PREFIX_REGEX = /^([a-zA-Z]+!)(.*)$/;
 
 const webhookCache = new Map();
+const WEBHOOK_CACHE_TTL = 24 * 60 * 60 * 1000; // 24時間
 
 /* =========================
    🔐 UserID エンコード
 ========================= */
 
-const ENCODE_KEY = process.env.USER_ID_KEY || "modbot_default_key";
+const ENCODE_KEY = process.env.USER_ID_KEY;
 
 function encodeUserId(userId) {
-    return Buffer.from(userId + ENCODE_KEY).toString('base64');
+    // | で区切ることでdecodeが確実になる
+    return Buffer.from(userId + '|' + ENCODE_KEY).toString('base64');
 }
 
 function decodeUserId(encoded) {
     try {
-        return Buffer.from(encoded, 'base64').toString().replace(ENCODE_KEY, '');
+        const decoded = Buffer.from(encoded, 'base64').toString();
+        return decoded.split('|')[0];
     } catch { return null; }
 }
 
@@ -45,7 +54,6 @@ function decodeUserId(encoded) {
    🛡️ 補助関数
 ========================= */
 
-// 権限チェック (index.jsのロジックと同様)
 function hasModPermission(member) {
     if (!member) return false;
     if (member.permissions.has('Administrator')) return true;
@@ -131,14 +139,15 @@ function recodeText(text, isReplyParent = false) {
 }
 
 /* =========================
-   🖼️ 画像モデレーション
+   🖼️ 画像モデレーション（上限4枚）
 ========================= */
 
 async function moderateImages(imageUrls) {
     if (!imageUrls.length) return false;
+    const limited = imageUrls.slice(0, 4);
     try {
         const results = await Promise.all(
-            imageUrls.map(url =>
+            limited.map(url =>
                 openai.moderations.create({
                     model: "omni-moderation-latest",
                     input: [{ type: "image_url", image_url: { url } }]
@@ -153,7 +162,20 @@ async function moderateImages(imageUrls) {
 }
 
 /* =========================
-   📍 Webhook取得
+   🗑️ 削除ボタン生成
+========================= */
+
+function buildDeleteRow(encodedUserId) {
+    const deleteButton = new ButtonBuilder()
+        .setCustomId(`mod_delete_${encodedUserId}`)
+        .setLabel('削除')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('🗑️');
+    return new ActionRowBuilder().addComponents(deleteButton);
+}
+
+/* =========================
+   📍 Webhook取得（TTL＋失敗時キャッシュクリア＋リトライ）
 ========================= */
 
 async function getOrCreateWebhook(channel) {
@@ -162,9 +184,10 @@ async function getOrCreateWebhook(channel) {
 
     const cacheKey = targetChannel.id;
     const cached = webhookCache.get(cacheKey);
-    if (cached) {
-        if (cached.token) return cached;
-        webhookCache.delete(cacheKey);
+
+    // TTL内ならそのまま返す（API叩かない）
+    if (cached && Date.now() - cached.timestamp < WEBHOOK_CACHE_TTL) {
+        return cached.webhook;
     }
 
     try {
@@ -173,7 +196,7 @@ async function getOrCreateWebhook(channel) {
         if (!webhook) {
             webhook = await targetChannel.createWebhook({ name: 'Moderator' });
         }
-        webhookCache.set(cacheKey, webhook);
+        webhookCache.set(cacheKey, { webhook, timestamp: Date.now() });
         return webhook;
     } catch (e) {
         console.error(`[Webhook] ❌ 失敗: ${e.message}`);
@@ -181,15 +204,39 @@ async function getOrCreateWebhook(channel) {
     }
 }
 
+async function sendWebhook(channel, options) {
+    const targetChannel = channel.isThread() ? channel.parent : channel;
+    const cacheKey = targetChannel?.id;
+    const webhook = await getOrCreateWebhook(channel);
+    if (!webhook) return null;
+
+    try {
+        return await webhook.send(options);
+    } catch (e) {
+        // 送信失敗時はキャッシュクリアして1回リトライ
+        if (cacheKey) webhookCache.delete(cacheKey);
+        console.error(`[Webhook] ❌ 送信失敗、リトライします: ${e.message}`);
+        try {
+            const retryWebhook = await getOrCreateWebhook(channel);
+            if (!retryWebhook) return null;
+            return await retryWebhook.send(options);
+        } catch (e2) {
+            console.error(`[Webhook] ❌ リトライも失敗: ${e2.message}`);
+            return null;
+        }
+    }
+}
+
 /* =========================
    💬 リプライ装飾の生成
 ========================= */
+
 async function buildReplyPrefix(message) {
     if (!message.reference?.messageId) return "";
 
     try {
         const referencedMsg = await message.channel.messages.fetch(message.reference.messageId);
-        
+
         let targetId = referencedMsg.author.id;
         const match = referencedMsg.content?.match(USER_ID_FOOTER_REGEX);
         if (referencedMsg.webhookId && match) targetId = decodeUserId(match[1]) ?? match[1];
@@ -222,9 +269,7 @@ async function buildReplyPrefix(message) {
 ========================= */
 
 async function handlePseudoReply(message) {
-    // 🔥 前との違い：役職（権限）チェックを追加。一般ユーザーのリプライはスルー。
     if (!hasModPermission(message.member)) return false;
-
     if (!message.reference?.messageId) return false;
 
     let referencedMsg;
@@ -232,32 +277,27 @@ async function handlePseudoReply(message) {
         referencedMsg = await message.channel.messages.fetch(message.reference.messageId);
     } catch { return false; }
 
-    if (!referencedMsg.webhookId || referencedMsg.applicationId === TUPPERBOX_APP_ID) {
-        return false;
-    }
-
+    if (!referencedMsg.webhookId || referencedMsg.applicationId === TUPPERBOX_APP_ID) return false;
     if (!referencedMsg.content?.match(USER_ID_FOOTER_REGEX)) return false;
 
     if (message.deletable) await message.delete().catch(() => {});
 
+    const encoded = encodeUserId(message.author.id);
     const replyPrefix = await buildReplyPrefix(message);
-    const replyContent = `${replyPrefix}${recodeText(message.content)}\n-# 👤 ${encodeUserId(message.author.id)}`;
+    const replyContent = `${replyPrefix}${recodeText(message.content)}\n-# 👤 ${encoded}`;
 
-    const webhook = await getOrCreateWebhook(message.channel);
-    if (!webhook) return true;
-
-    // 負荷対策：疑似リプライでは画像を引き継がない
     const sendOptions = {
         content: replyContent,
         files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        allowedMentions: { parse: [] } 
+        components: [buildDeleteRow(encoded)],
+        allowedMentions: { parse: [] }
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
 
-    await webhook.send(sendOptions).catch(e => console.error(`[PseudoReply] ❌ ${e.message}`));
+    await sendWebhook(message.channel, sendOptions);
     return true;
 }
 
@@ -275,28 +315,26 @@ async function handleSensitivePost(message) {
 
     if (message.deletable) await message.delete().catch(() => {});
 
-    const webhook = await getOrCreateWebhook(message.channel);
-    if (!webhook) return true;
-
-    // ここだけ画像を引き継ぐ
     const files = [...message.attachments.values()].map(att => ({
         attachment: att.url,
         name: `SPOILER_${att.name || 'image.png'}`
     }));
 
+    const encoded = encodeUserId(message.author.id);
     const cleanContent = (message.content || "").replace(SENSITIVE_TRIGGER_EMOJI, "").trim();
 
     const sendOptions = {
-        content: (cleanContent || "\u200b") + `\n-# 👤 ${encodeUserId(message.author.id)}`,
+        content: (cleanContent || "\u200b") + `\n-# 👤 ${encoded}`,
         files,
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
+        components: [buildDeleteRow(encoded)],
         allowedMentions: { parse: [] }
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
 
-    await webhook.send(sendOptions).catch(e => console.error(`[Sensitive] ❌ ${e.message}`));
+    await sendWebhook(message.channel, sendOptions);
     return true;
 }
 
@@ -308,9 +346,14 @@ async function handleModerator(message) {
     if (!message.content && !message.attachments.size) return;
     if (message.author.bot) return;
 
-    // Tupperbox優先
     const rawContent = message.content || "";
-    if (TUPPERBOX_PREFIX_REGEX.test(rawContent)) {
+
+    // Tupperbox優先
+    if (TUPPERBOX_PREFIX_REGEX.test(rawContent)) return;
+
+    // スパムチェックを最速で実行
+    if (checkSpam(message.author.id)) {
+        await message.delete().catch(() => {});
         return;
     }
 
@@ -318,16 +361,11 @@ async function handleModerator(message) {
         EXEMPT_ROLES.some(id => message.member?.roles.cache.has(id)) ||
         getModExcludeList().includes(message.author.id);
 
-    if (checkSpam(message.author.id)) {
-        await message.delete().catch(() => {});
-        return;
-    }
-
     const strippedContent = stripTupperPrefix(rawContent);
     const normalized = strippedContent.toLowerCase().replace(/\s+/g, "");
 
+    // 冗長だった isLoliShota && isUnderAge を削除
     const isLoliShota = LOLI_SHOTA_REGEX.test(normalized);
-    const isUnderAge = AGE_REGEX.test(normalized);
     const isThreat = THREAT_REGEX.test(normalized);
     const isDrug = DRUG_REGEX.test(normalized);
 
@@ -347,10 +385,9 @@ async function handleModerator(message) {
 
     const scores = textResult?.results[0]?.category_scores ?? {};
 
-    // 閾値調整：ロリ0.5以上、他0.9以上
     const isAiLoliDanger = scores['sexual/minors'] > 0.5;
-    const isOtherHighDanger = 
-        scores.harassment > 0.9 || 
+    const isOtherHighDanger =
+        scores.harassment > 0.9 ||
         scores['harassment/threatening'] > 0.9 ||
         scores.hate > 0.9 ||
         scores['hate/threatening'] > 0.9 ||
@@ -359,8 +396,7 @@ async function handleModerator(message) {
         scores.violence > 0.9 ||
         scores['violence/graphic'] > 0.9;
 
-    // 検閲実行
-    if ((isLoliShota || (isLoliShota && isUnderAge) || isThreat || isDrug || isAiLoliDanger || isOtherHighDanger || imageResult) && !isExempt) {
+    if ((isLoliShota || isThreat || isDrug || isAiLoliDanger || isOtherHighDanger || imageResult) && !isExempt) {
         await instantDeleteAndRecode(message);
         return;
     }
@@ -382,24 +418,51 @@ async function instantDeleteAndRecode(message) {
     let finalContent = recodeText(message.content);
     if (!finalContent) finalContent = "*(Message Removed)*";
 
+    const encoded = encodeUserId(message.author.id);
     const replyPrefix = await buildReplyPrefix(message);
-    finalContent = `${replyPrefix}${finalContent}\n-# 👤 ${encodeUserId(message.author.id)}`;
+    finalContent = `${replyPrefix}${finalContent}\n-# 👤 ${encoded}`;
 
-    const webhook = await getOrCreateWebhook(message.channel);
-    if (!webhook) return;
-
-    // 負荷対策：検閲削除時は画像を引き継がない
     const sendOptions = {
         content: finalContent,
-        files: [], 
+        files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
+        components: [buildDeleteRow(encoded)],
         allowedMentions: { parse: [] }
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
 
-    await webhook.send(sendOptions).catch(e => console.error(`[Recode] ❌ ${e.message}`));
+    await sendWebhook(message.channel, sendOptions);
 }
 
-module.exports = { handleModerator, decodeUserId };
+/* =========================
+   🗑️ 削除ボタンInteraction処理
+========================= */
+
+async function handleDeleteInteraction(interaction) {
+    if (!interaction.isButton()) return false;
+    if (!interaction.customId.startsWith('mod_delete_')) return false;
+
+    const encoded = interaction.customId.replace('mod_delete_', '');
+    const originalUserId = decodeUserId(encoded);
+
+    const isSelf = interaction.user.id === originalUserId;
+    const isMod = hasModPermission(interaction.member);
+
+    if (!isSelf && !isMod) {
+        await interaction.reply({ content: '❌ 自分のメッセージか、Mod権限が必要です。', ephemeral: true });
+        return true;
+    }
+
+    try {
+        await interaction.message.delete();
+    } catch (e) {
+        await interaction.reply({ content: '❌ 削除に失敗しました。', ephemeral: true });
+        console.error(`[DeleteButton] ❌ ${e.message}`);
+    }
+
+    return true;
+}
+
+module.exports = { handleModerator, handleDeleteInteraction };
