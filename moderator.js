@@ -33,13 +33,12 @@ const webhookCache = new Map();
 const WEBHOOK_CACHE_TTL = 24 * 60 * 60 * 1000; // 24時間
 
 /* =========================
-   🔐 UserID エンコード
+   🔐 UserID エンコード（フッター用）
 ========================= */
 
 const ENCODE_KEY = process.env.USER_ID_KEY;
 
 function encodeUserId(userId) {
-    // | で区切ることでdecodeが確実になる
     return Buffer.from(userId + '|' + ENCODE_KEY).toString('base64');
 }
 
@@ -163,11 +162,13 @@ async function moderateImages(imageUrls) {
 
 /* =========================
    🗑️ 削除ボタン生成
+   customIdにはUserIDを生で入れる（100文字制限対策）
+   フッターのエンコードとは別管理
 ========================= */
 
-function buildDeleteRow(encodedUserId) {
+function buildDeleteRow(userId) {
     const deleteButton = new ButtonBuilder()
-        .setCustomId(`mod_delete_${encodedUserId}`)
+        .setCustomId(`mod_delete_${userId}`) // 生のUserID（18桁なので余裕で100文字以内）
         .setLabel('削除')
         .setStyle(ButtonStyle.Danger)
         .setEmoji('🗑️');
@@ -282,16 +283,15 @@ async function handlePseudoReply(message) {
 
     if (message.deletable) await message.delete().catch(() => {});
 
-    const encoded = encodeUserId(message.author.id);
     const replyPrefix = await buildReplyPrefix(message);
-    const replyContent = `${replyPrefix}${recodeText(message.content)}\n-# 👤 ${encoded}`;
+    const replyContent = `${replyPrefix}${recodeText(message.content)}\n-# 👤 ${encodeUserId(message.author.id)}`;
 
     const sendOptions = {
         content: replyContent,
         files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        components: [buildDeleteRow(encoded)],
+        components: [buildDeleteRow(message.author.id)],
         allowedMentions: { parse: [] }
     };
 
@@ -320,15 +320,14 @@ async function handleSensitivePost(message) {
         name: `SPOILER_${att.name || 'image.png'}`
     }));
 
-    const encoded = encodeUserId(message.author.id);
     const cleanContent = (message.content || "").replace(SENSITIVE_TRIGGER_EMOJI, "").trim();
 
     const sendOptions = {
-        content: (cleanContent || "\u200b") + `\n-# 👤 ${encoded}`,
+        content: (cleanContent || "\u200b") + `\n-# 👤 ${encodeUserId(message.author.id)}`,
         files,
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        components: [buildDeleteRow(encoded)],
+        components: [buildDeleteRow(message.author.id)],
         allowedMentions: { parse: [] }
     };
 
@@ -364,7 +363,6 @@ async function handleModerator(message) {
     const strippedContent = stripTupperPrefix(rawContent);
     const normalized = strippedContent.toLowerCase().replace(/\s+/g, "");
 
-    // 冗長だった isLoliShota && isUnderAge を削除
     const isLoliShota = LOLI_SHOTA_REGEX.test(normalized);
     const isThreat = THREAT_REGEX.test(normalized);
     const isDrug = DRUG_REGEX.test(normalized);
@@ -418,16 +416,15 @@ async function instantDeleteAndRecode(message) {
     let finalContent = recodeText(message.content);
     if (!finalContent) finalContent = "*(Message Removed)*";
 
-    const encoded = encodeUserId(message.author.id);
     const replyPrefix = await buildReplyPrefix(message);
-    finalContent = `${replyPrefix}${finalContent}\n-# 👤 ${encoded}`;
+    finalContent = `${replyPrefix}${finalContent}\n-# 👤 ${encodeUserId(message.author.id)}`;
 
     const sendOptions = {
         content: finalContent,
         files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        components: [buildDeleteRow(encoded)],
+        components: [buildDeleteRow(message.author.id)],
         allowedMentions: { parse: [] }
     };
 
@@ -444,8 +441,7 @@ async function handleDeleteInteraction(interaction) {
     if (!interaction.isButton()) return false;
     if (!interaction.customId.startsWith('mod_delete_')) return false;
 
-    const encoded = interaction.customId.replace('mod_delete_', '');
-    const originalUserId = decodeUserId(encoded);
+    const originalUserId = interaction.customId.replace('mod_delete_', '');
 
     const isSelf = interaction.user.id === originalUserId;
     const isMod = hasModPermission(interaction.member);
