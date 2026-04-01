@@ -18,12 +18,28 @@ const SENSITIVE_ALLOWED_ROLES = [
 const ALLOWED_ROLES = ['1476944370694488134', '1478715790575538359'];
 
 const SENSITIVE_TRIGGER_EMOJI = '👶';
-const USER_ID_FOOTER_REGEX = /-# 👤 (\d+)/;
+const USER_ID_FOOTER_REGEX = /-# 👤 ([A-Za-z0-9+/=]+)/;
 
 const TUPPERBOX_APP_ID = '431544605209788416';
 const TUPPERBOX_PREFIX_REGEX = /^([a-zA-Z]+!)(.*)$/;
 
 const webhookCache = new Map();
+
+/* =========================
+   🔐 UserID エンコード
+========================= */
+
+const ENCODE_KEY = process.env.USER_ID_KEY || "modbot_default_key";
+
+function encodeUserId(userId) {
+    return Buffer.from(userId + ENCODE_KEY).toString('base64');
+}
+
+function decodeUserId(encoded) {
+    try {
+        return Buffer.from(encoded, 'base64').toString().replace(ENCODE_KEY, '');
+    } catch { return null; }
+}
 
 /* =========================
    🛡️ 補助関数
@@ -176,7 +192,7 @@ async function buildReplyPrefix(message) {
         
         let targetId = referencedMsg.author.id;
         const match = referencedMsg.content?.match(USER_ID_FOOTER_REGEX);
-        if (referencedMsg.webhookId && match) targetId = match[1];
+        if (referencedMsg.webhookId && match) targetId = decodeUserId(match[1]) ?? match[1];
 
         let parentRaw = referencedMsg.content || "";
         parentRaw = parentRaw.replace(USER_ID_FOOTER_REGEX, "").replace(/-#.*$/gm, "");
@@ -225,7 +241,7 @@ async function handlePseudoReply(message) {
     if (message.deletable) await message.delete().catch(() => {});
 
     const replyPrefix = await buildReplyPrefix(message);
-    const replyContent = `${replyPrefix}${recodeText(message.content)}\n-# 👤 ${message.author.id}`;
+    const replyContent = `${replyPrefix}${recodeText(message.content)}\n-# 👤 ${encodeUserId(message.author.id)}`;
 
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return true;
@@ -271,7 +287,7 @@ async function handleSensitivePost(message) {
     const cleanContent = (message.content || "").replace(SENSITIVE_TRIGGER_EMOJI, "").trim();
 
     const sendOptions = {
-        content: (cleanContent || "\u200b") + `\n-# 👤 ${message.author.id}`,
+        content: (cleanContent || "\u200b") + `\n-# 👤 ${encodeUserId(message.author.id)}`,
         files,
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
@@ -367,7 +383,7 @@ async function instantDeleteAndRecode(message) {
     if (!finalContent) finalContent = "*(Message Removed)*";
 
     const replyPrefix = await buildReplyPrefix(message);
-    finalContent = `${replyPrefix}${finalContent}\n-# 👤 ${message.author.id}`;
+    finalContent = `${replyPrefix}${finalContent}\n-# 👤 ${encodeUserId(message.author.id)}`;
 
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return;
@@ -386,4 +402,4 @@ async function instantDeleteAndRecode(message) {
     await webhook.send(sendOptions).catch(e => console.error(`[Recode] ❌ ${e.message}`));
 }
 
-module.exports = { handleModerator };
+module.exports = { handleModerator, decodeUserId };
