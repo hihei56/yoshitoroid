@@ -14,6 +14,9 @@ const SENSITIVE_ALLOWED_ROLES = [
     '1477024387524857988',
 ];
 
+// 🔥 疑似リプライやモデレーションを実行できる権限ロール (index.jsと同期)
+const ALLOWED_ROLES = ['1476944370694488134', '1478715790575538359'];
+
 const SENSITIVE_TRIGGER_EMOJI = '👶';
 const USER_ID_FOOTER_REGEX = /-# 👤 (\d+)/;
 
@@ -23,10 +26,17 @@ const TUPPERBOX_PREFIX_REGEX = /^([a-zA-Z]+!)(.*)$/;
 const webhookCache = new Map();
 
 /* =========================
-   🛡️ スパム対策
+   🛡️ 補助関数
 ========================= */
-const spamTracker = new Map();
 
+// 権限チェック (index.jsのロジックと同様)
+function hasModPermission(member) {
+    if (!member) return false;
+    if (member.permissions.has('Administrator')) return true;
+    return ALLOWED_ROLES.some(roleId => member.roles.cache.has(roleId));
+}
+
+const spamTracker = new Map();
 function checkSpam(userId) {
     const now = Date.now();
     const entry = spamTracker.get(userId);
@@ -119,7 +129,6 @@ async function moderateImages(imageUrls) {
                 })
             )
         );
-        // 画像もロリ関連(sexual_minors)のみ検知
         return results.some(r => r.results[0]?.categories?.sexual_minors);
     } catch (e) {
         console.error("[Image Mod Error]:", e.message);
@@ -128,7 +137,7 @@ async function moderateImages(imageUrls) {
 }
 
 /* =========================
-   📍 Webhook取得（フォーラム対応）
+   📍 Webhook取得
 ========================= */
 
 async function getOrCreateWebhook(channel) {
@@ -157,7 +166,7 @@ async function getOrCreateWebhook(channel) {
 }
 
 /* =========================
-   💬 リプライ装飾の生成 (共通化)
+   💬 リプライ装飾の生成
 ========================= */
 async function buildReplyPrefix(message) {
     if (!message.reference?.messageId) return "";
@@ -197,6 +206,9 @@ async function buildReplyPrefix(message) {
 ========================= */
 
 async function handlePseudoReply(message) {
+    // 🔥 前との違い：役職（権限）チェックを追加。一般ユーザーのリプライはスルー。
+    if (!hasModPermission(message.member)) return false;
+
     if (!message.reference?.messageId) return false;
 
     let referencedMsg;
@@ -218,7 +230,7 @@ async function handlePseudoReply(message) {
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return true;
 
-    // 疑似リプライでは画像を引き継がない（負荷対策・放棄）
+    // 負荷対策：疑似リプライでは画像を引き継がない
     const sendOptions = {
         content: replyContent,
         files: [],
@@ -273,7 +285,7 @@ async function handleSensitivePost(message) {
 }
 
 /* =========================
-   🔥 メイン処理（閾値調整版）
+   🔥 メイン処理
 ========================= */
 
 async function handleModerator(message) {
@@ -298,7 +310,6 @@ async function handleModerator(message) {
     const strippedContent = stripTupperPrefix(rawContent);
     const normalized = strippedContent.toLowerCase().replace(/\s+/g, "");
 
-    // 1. 正規表現による検知
     const isLoliShota = LOLI_SHOTA_REGEX.test(normalized);
     const isUnderAge = AGE_REGEX.test(normalized);
     const isThreat = THREAT_REGEX.test(normalized);
@@ -308,7 +319,6 @@ async function handleModerator(message) {
         .filter(att => att.contentType?.startsWith('image/'))
         .map(att => att.url);
 
-    // 2. AI判定の取得（スコアベース）
     const [textResult, imageResult] = await Promise.all([
         strippedContent.trim().length > 0
             ? openai.moderations.create({
@@ -321,11 +331,8 @@ async function handleModerator(message) {
 
     const scores = textResult?.results[0]?.category_scores ?? {};
 
-    // 🔥 閾値の適用
-    // ロリ関連 (sexual/minors) は 50% 以上でアウト
+    // 閾値調整：ロリ0.5以上、他0.9以上
     const isAiLoliDanger = scores['sexual/minors'] > 0.5;
-
-    // それ以外（ハラスメント、ヘイト等）は 90% 以上でアウト
     const isOtherHighDanger = 
         scores.harassment > 0.9 || 
         scores['harassment/threatening'] > 0.9 ||
@@ -336,7 +343,7 @@ async function handleModerator(message) {
         scores.violence > 0.9 ||
         scores['violence/graphic'] > 0.9;
 
-    // 検閲実行条件
+    // 検閲実行
     if ((isLoliShota || (isLoliShota && isUnderAge) || isThreat || isDrug || isAiLoliDanger || isOtherHighDanger || imageResult) && !isExempt) {
         await instantDeleteAndRecode(message);
         return;
@@ -365,7 +372,7 @@ async function instantDeleteAndRecode(message) {
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return;
 
-    // 検閲削除時は画像を引き継がない（負荷対策・放棄）
+    // 負荷対策：検閲削除時は画像を引き継がない
     const sendOptions = {
         content: finalContent,
         files: [], 
