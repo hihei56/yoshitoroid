@@ -15,12 +15,9 @@ const SENSITIVE_ALLOWED_ROLES = [
 ];
 
 const SENSITIVE_TRIGGER_EMOJI = '👶';
-const MAX_FILE_SIZE_MB = 8;
-const MAX_VIDEO_GIF_COUNT = 3;
 const USER_ID_FOOTER_REGEX = /-# 👤 (\d+)/;
 
 const TUPPERBOX_APP_ID = '431544605209788416';
-// 英字+! (例: name!) にマッチ
 const TUPPERBOX_PREFIX_REGEX = /^([a-zA-Z]+!)(.*)$/;
 
 const webhookCache = new Map();
@@ -91,7 +88,6 @@ const DRUG_REGEX = new RegExp([
    ✨ テキスト整形
 ========================= */
 
-// 🔥 修正: スコープ外に出し、正規表現を統一
 function stripTupperPrefix(content) {
     if (!content) return content;
     const match = content.match(TUPPERBOX_PREFIX_REGEX);
@@ -106,32 +102,6 @@ function recodeText(text, isReplyParent = false) {
     [/ら?警察いた/g, /警察/g, /🚓/g].forEach(p => cleaned = cleaned.replace(p, ""));
     if (isReplyParent && cleaned.length > 100) cleaned = cleaned.substring(0, 97) + "...";
     return cleaned.trim();
-}
-
-/* =========================
-   📁 メディア分類
-========================= */
-
-function classifyAttachments(message) {
-    const images = [];
-    const heavyFiles = [];
-    let videoGifCount = 0;
-
-    for (const att of message.attachments.values()) {
-        const sizeMB = att.size / (1024 * 1024);
-        const isVideo = att.contentType?.startsWith('video/');
-        const isGif = att.contentType === 'image/gif' || att.name?.endsWith('.gif');
-        const isImage = att.contentType?.startsWith('image/');
-
-        if (sizeMB > MAX_FILE_SIZE_MB) {
-            heavyFiles.push(att);
-            continue;
-        }
-        if (isVideo || isGif) videoGifCount++;
-        if (isImage) images.push(att.url);
-    }
-
-    return { images, heavyFiles, tooManyVideoGif: videoGifCount > MAX_VIDEO_GIF_COUNT };
 }
 
 /* =========================
@@ -162,10 +132,7 @@ async function moderateImages(imageUrls) {
 
 async function getOrCreateWebhook(channel) {
     const targetChannel = channel.isThread() ? channel.parent : channel;
-    if (!targetChannel) {
-        console.error("[Webhook] ❌ targetChannel が null");
-        return null;
-    }
+    if (!targetChannel) return null;
 
     const cacheKey = targetChannel.id;
     const cached = webhookCache.get(cacheKey);
@@ -179,13 +146,48 @@ async function getOrCreateWebhook(channel) {
         let webhook = webhooks.find(w => w.token);
         if (!webhook) {
             webhook = await targetChannel.createWebhook({ name: 'Moderator' });
-            console.log(`[Webhook] 🆕 作成: ${webhook.id}`);
         }
         webhookCache.set(cacheKey, webhook);
         return webhook;
     } catch (e) {
-        console.error(`[Webhook] ❌ 失敗: ${e.message} code=${e.code}`);
+        console.error(`[Webhook] ❌ 失敗: ${e.message}`);
         return null;
+    }
+}
+
+/* =========================
+   💬 リプライ装飾の生成 (共通化)
+========================= */
+async function buildReplyPrefix(message) {
+    if (!message.reference?.messageId) return "";
+
+    try {
+        const referencedMsg = await message.channel.messages.fetch(message.reference.messageId);
+        
+        let targetId = referencedMsg.author.id;
+        const match = referencedMsg.content?.match(USER_ID_FOOTER_REGEX);
+        if (referencedMsg.webhookId && match) targetId = match[1];
+
+        let parentRaw = referencedMsg.content || "";
+        parentRaw = parentRaw.replace(USER_ID_FOOTER_REGEX, "").replace(/-#.*$/gm, "");
+
+        const currentHeaderRegex = /^> \[Reply to:\]\(https?:\/\/[^\)]+\) <@[0-9]+>\n> .*\n/;
+        parentRaw = parentRaw.replace(currentHeaderRegex, "");
+
+        const oldHeaderRegex = /^\[↩ [^\]]+\]\(https?:\/\/[^\)]+\)\n/;
+        parentRaw = parentRaw.replace(oldHeaderRegex, "");
+
+        parentRaw = parentRaw.trim();
+
+        const parentPreview = parentRaw.length > 80
+            ? parentRaw.substring(0, 77).replace(/\n/g, ' ') + "..."
+            : parentRaw.replace(/\n/g, ' ');
+
+        const jumpUrl = `https://discord.com/channels/${message.guildId}/${message.channelId}/${referencedMsg.id}`;
+
+        return `> [Reply to:](${jumpUrl}) <@${targetId}>\n> ${parentPreview}\n`;
+    } catch {
+        return "";
     }
 }
 
@@ -199,59 +201,38 @@ async function handlePseudoReply(message) {
     let referencedMsg;
     try {
         referencedMsg = await message.channel.messages.fetch(message.reference.messageId);
-    } catch {
+    } catch { return false; }
+
+    if (!referencedMsg.webhookId || referencedMsg.applicationId === TUPPERBOX_APP_ID) {
         return false;
     }
 
-    if (!referencedMsg.webhookId) return false;
-
-    if (referencedMsg.applicationId === TUPPERBOX_APP_ID) {
-        return false;
-    }
-
-    const match = referencedMsg.content?.match(USER_ID_FOOTER_REGEX);
-    if (!match) return false;
-
-    const originalUserId = match[1];
-    let originalUsername = `<@${originalUserId}>`;
-    try {
-        const member = await message.guild.members.fetch(originalUserId);
-        originalUsername = `@${member.displayName}`;
-    } catch {}
-
-    const parentRaw = referencedMsg.content
-        ?.replace(USER_ID_FOOTER_REGEX, "")
-        .replace(/-#.*$/gm, "")
-        .trim() || "";
-
-    const parentPreview = parentRaw.length > 80
-        ? parentRaw.substring(0, 77) + "..."
-        : parentRaw;
-
-    const jumpUrl = `https://discord.com/channels/${message.guildId}/${message.channelId}/${referencedMsg.id}`;
-
-    const replyContent =
-`[↩ ${originalUsername}: ${parentPreview}](${jumpUrl})
-${recodeText(message.content)}
--# 👤 ${message.author.id}`;
+    if (!referencedMsg.content?.match(USER_ID_FOOTER_REGEX)) return false;
 
     if (message.deletable) await message.delete().catch(() => {});
+
+    const replyPrefix = await buildReplyPrefix(message);
+    const replyContent = `${replyPrefix}${recodeText(message.content)}\n-# 👤 ${message.author.id}`;
 
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return true;
 
+    const files = [...message.attachments.values()].map(att => ({
+        attachment: att.url,
+        name: att.name
+    }));
+
     const sendOptions = {
         content: replyContent,
+        files: files,
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        allowedMentions: { parse: [] }
+        allowedMentions: { parse: [] } 
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
 
-    await webhook.send(sendOptions).catch(e =>
-        console.error(`[PseudoReply] ❌ ${e.message} code=${e.code}`)
-    );
+    await webhook.send(sendOptions).catch(e => console.error(`[PseudoReply] ❌ ${e.message}`));
     return true;
 }
 
@@ -260,9 +241,7 @@ ${recodeText(message.content)}
 ========================= */
 
 async function handleSensitivePost(message) {
-    const hasPermission = SENSITIVE_ALLOWED_ROLES.some(id =>
-        message.member?.roles.cache.has(id)
-    );
+    const hasPermission = SENSITIVE_ALLOWED_ROLES.some(id => message.member?.roles.cache.has(id));
     if (!hasPermission) return false;
 
     const hasTrigger = message.content?.includes(SENSITIVE_TRIGGER_EMOJI);
@@ -279,9 +258,7 @@ async function handleSensitivePost(message) {
         name: `SPOILER_${att.name || 'image.png'}`
     }));
 
-    const cleanContent = (message.content || "")
-        .replace(SENSITIVE_TRIGGER_EMOJI, "")
-        .trim();
+    const cleanContent = (message.content || "").replace(SENSITIVE_TRIGGER_EMOJI, "").trim();
 
     const sendOptions = {
         content: (cleanContent || "\u200b") + `\n-# 👤 ${message.author.id}`,
@@ -293,9 +270,7 @@ async function handleSensitivePost(message) {
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
 
-    await webhook.send(sendOptions).catch(e =>
-        console.error(`[Sensitive] ❌ ${e.message} code=${e.code}`)
-    );
+    await webhook.send(sendOptions).catch(e => console.error(`[Sensitive] ❌ ${e.message}`));
     return true;
 }
 
@@ -305,43 +280,19 @@ async function handleSensitivePost(message) {
 
 async function handleModerator(message) {
     if (!message.content && !message.attachments.size) return;
-    if (message.author.bot) return;
+    if (message.author.bot) return; // 元の仕様（ボットは無視）
 
     const isExempt =
         EXEMPT_ROLES.some(id => message.member?.roles.cache.has(id)) ||
         getModExcludeList().includes(message.author.id);
 
-    const sensitiveHandled = await handleSensitivePost(message);
-    if (sensitiveHandled) return;
-
-    const pseudoHandled = await handlePseudoReply(message);
-    if (pseudoHandled) return;
-
-    if (isExempt) return;
-
     if (checkSpam(message.author.id)) {
         await message.delete().catch(() => {});
-        console.log(`[Spam] ${message.author.tag}`);
         return;
     }
 
-    const { images, heavyFiles, tooManyVideoGif } = classifyAttachments(message);
-    
-    // 🔥 改善: 重いファイルがあっても、テキストがあるならテキストは残して代理送信する
-    if (heavyFiles.length > 0 || tooManyVideoGif) {
-        if (message.deletable) await message.delete().catch(() => {});
-        console.log(`[Heavy Media] 削除: ${message.author.tag}`);
-        
-        if (message.content) {
-            // 元のテキストに警告を加えて再送
-            const warningMsg = Object.assign({}, message);
-            warningMsg.content = message.content + "\n*(⚠️ ファイルサイズ超過または動画・GIFが多すぎるため、メディアは削除されました)*";
-            await instantDeleteAndRecode(warningMsg);
-        }
-        return;
-    }  
-
     const rawContent = message.content || "";
+    const isTupperboxCommand = TUPPERBOX_PREFIX_REGEX.test(rawContent); // Tupperboxコマンドか判定
     const strippedContent = stripTupperPrefix(rawContent);
     const normalized = strippedContent.toLowerCase().replace(/\s+/g, "");
 
@@ -350,18 +301,16 @@ async function handleModerator(message) {
     const isThreat = THREAT_REGEX.test(normalized);
     const isDrug = DRUG_REGEX.test(normalized);
 
-    if (isLoliShota || (isLoliShota && isUnderAge) || isThreat || isDrug) {
-        await instantDeleteAndRecode(message);
-        return;
-    }
+    const images = [...message.attachments.values()]
+        .filter(att => att.contentType?.startsWith('image/'))
+        .map(att => att.url);
 
-    // 🔥 改善: テキストが空欄の場合はOpenAIへリクエストを送らない（エラー防止）
     const [textResult, imageResult] = await Promise.all([
         strippedContent.trim().length > 0
             ? openai.moderations.create({
                 model: "omni-moderation-latest",
                 input: strippedContent
-            }).catch(e => { console.error("[Text Mod Error]:", e.message); return null; })
+            }).catch(() => null)
             : Promise.resolve(null),
         moderateImages(images)
     ]);
@@ -369,9 +318,24 @@ async function handleModerator(message) {
     const cats = textResult?.results[0]?.categories ?? {};
     const textDanger = cats.sexual_minors || cats.hate || cats['self-harm'] || cats.harassment;
 
-    if (textDanger || imageResult) {
+    // NGワード検知時は今まで通り削除＋再送
+    if ((isLoliShota || (isLoliShota && isUnderAge) || isThreat || isDrug || textDanger || imageResult) && !isExempt) {
         await instantDeleteAndRecode(message);
+        return;
     }
+
+    // 🔥 Tupperboxコマンドの例外処理 🔥
+    // ロールプレイ（t!text 等）の場合は、TupperboxにWebhook化を任せるため、
+    // 自前Botでの「疑似リプライ」や「センシティブ処理」を行わずにここでスキップする
+    if (isTupperboxCommand) {
+        return;
+    }
+
+    const sensitiveHandled = await handleSensitivePost(message);
+    if (sensitiveHandled) return;
+
+    const pseudoHandled = await handlePseudoReply(message);
+    if (pseudoHandled) return;
 }
 
 /* =========================
@@ -381,15 +345,15 @@ async function handleModerator(message) {
 async function instantDeleteAndRecode(message) {
     if (message.deletable) await message.delete().catch(() => {});
 
+    // 余計な改変はせず、元のテキストをそのまま再送する仕様
     let finalContent = recodeText(message.content);
     if (!finalContent) finalContent = "*(Message Removed)*";
-    finalContent += `\n-# 👤 ${message.author.id}`;
+
+    const replyPrefix = await buildReplyPrefix(message);
+    finalContent = `${replyPrefix}${finalContent}\n-# 👤 ${message.author.id}`;
 
     const webhook = await getOrCreateWebhook(message.channel);
-    if (!webhook) {
-        console.error("[Recode] ❌ Webhook取得失敗");
-        return;
-    }
+    if (!webhook) return;
 
     const sendOptions = {
         content: finalContent,
@@ -400,9 +364,7 @@ async function instantDeleteAndRecode(message) {
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
 
-    await webhook.send(sendOptions).catch(e =>
-        console.error(`[Recode] ❌ ${e.message}`, JSON.stringify(e.rawError ?? {}))
-    );
+    await webhook.send(sendOptions).catch(e => console.error(`[Recode] ❌ ${e.message}`));
 }
 
 module.exports = { handleModerator };
