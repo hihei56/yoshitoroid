@@ -217,14 +217,10 @@ async function handlePseudoReply(message) {
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return true;
 
-    const files = [...message.attachments.values()].map(att => ({
-        attachment: att.url,
-        name: att.name
-    }));
-
+    // 🔥 修正: 疑似リプライでは画像を引き継がない（負荷対策・放棄）
     const sendOptions = {
         content: replyContent,
-        files: files,
+        files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
         allowedMentions: { parse: [] } 
@@ -253,6 +249,7 @@ async function handleSensitivePost(message) {
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return true;
 
+    // 🔥 ここだけ画像を引き継ぐ
     const files = [...message.attachments.values()].map(att => ({
         attachment: att.url,
         name: `SPOILER_${att.name || 'image.png'}`
@@ -280,7 +277,13 @@ async function handleSensitivePost(message) {
 
 async function handleModerator(message) {
     if (!message.content && !message.attachments.size) return;
-    if (message.author.bot) return; // 元の仕様（ボットは無視）
+    if (message.author.bot) return;
+
+    // ✨ Tupperboxコマンド(t!)なら、NG検知前に即終了
+    const rawContent = message.content || "";
+    if (TUPPERBOX_PREFIX_REGEX.test(rawContent)) {
+        return;
+    }
 
     const isExempt =
         EXEMPT_ROLES.some(id => message.member?.roles.cache.has(id)) ||
@@ -291,8 +294,6 @@ async function handleModerator(message) {
         return;
     }
 
-    const rawContent = message.content || "";
-    const isTupperboxCommand = TUPPERBOX_PREFIX_REGEX.test(rawContent); // Tupperboxコマンドか判定
     const strippedContent = stripTupperPrefix(rawContent);
     const normalized = strippedContent.toLowerCase().replace(/\s+/g, "");
 
@@ -318,16 +319,8 @@ async function handleModerator(message) {
     const cats = textResult?.results[0]?.categories ?? {};
     const textDanger = cats.sexual_minors || cats.hate || cats['self-harm'] || cats.harassment;
 
-    // NGワード検知時は今まで通り削除＋再送
     if ((isLoliShota || (isLoliShota && isUnderAge) || isThreat || isDrug || textDanger || imageResult) && !isExempt) {
         await instantDeleteAndRecode(message);
-        return;
-    }
-
-    // 🔥 Tupperboxコマンドの例外処理 🔥
-    // ロールプレイ（t!text 等）の場合は、TupperboxにWebhook化を任せるため、
-    // 自前Botでの「疑似リプライ」や「センシティブ処理」を行わずにここでスキップする
-    if (isTupperboxCommand) {
         return;
     }
 
@@ -345,7 +338,6 @@ async function handleModerator(message) {
 async function instantDeleteAndRecode(message) {
     if (message.deletable) await message.delete().catch(() => {});
 
-    // 余計な改変はせず、元のテキストをそのまま再送する仕様
     let finalContent = recodeText(message.content);
     if (!finalContent) finalContent = "*(Message Removed)*";
 
@@ -355,8 +347,10 @@ async function instantDeleteAndRecode(message) {
     const webhook = await getOrCreateWebhook(message.channel);
     if (!webhook) return;
 
+    // 🔥 検閲削除時は画像を引き継がない（放棄）
     const sendOptions = {
         content: finalContent,
+        files: [], 
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
         allowedMentions: { parse: [] }
