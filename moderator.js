@@ -1,14 +1,7 @@
 const { OpenAI } = require('openai');
-const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
 const { getModExcludeList } = require('./exclude_manager');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// 起動時にUSER_ID_KEYチェック
-if (!process.env.USER_ID_KEY) {
-    console.error('❌ [Fatal] USER_ID_KEY が .env に設定されていません。Botを終了します。');
-    process.exit(1);
-}
 
 const EXEMPT_ROLES = [
     '1486178659130933278',
@@ -24,29 +17,31 @@ const SENSITIVE_ALLOWED_ROLES = [
 const ALLOWED_ROLES = ['1476944370694488134', '1478715790575538359'];
 
 const SENSITIVE_TRIGGER_EMOJI = '👶';
-const USER_ID_FOOTER_REGEX = /-# 👤 ([A-Za-z0-9+/=]+)/;
 
 const TUPPERBOX_APP_ID = '431544605209788416';
 const TUPPERBOX_PREFIX_REGEX = /^([a-zA-Z]+!)(.*)$/;
 
 const webhookCache = new Map();
-const WEBHOOK_CACHE_TTL = 24 * 60 * 60 * 1000; // 24時間
+const WEBHOOK_CACHE_TTL = 24 * 60 * 60 * 1000;
 
 /* =========================
-   🔐 UserID エンコード（フッター用）
+   🔐 ゼロ幅文字でUserIDを隠す
 ========================= */
 
-const ENCODE_KEY = process.env.USER_ID_KEY;
-
-function encodeUserId(userId) {
-    return Buffer.from(userId + '|' + ENCODE_KEY).toString('base64');
+function hideUserId(userId) {
+    return userId.split('').map(c =>
+        String.fromCodePoint(0xE0000 + c.charCodeAt(0))
+    ).join('');
 }
 
-function decodeUserId(encoded) {
-    try {
-        const decoded = Buffer.from(encoded, 'base64').toString();
-        return decoded.split('|')[0];
-    } catch { return null; }
+function extractUserId(text) {
+    if (!text) return null;
+    const id = [...text].filter(c =>
+        c.codePointAt(0) >= 0xE0000 && c.codePointAt(0) <= 0xE007F
+    ).map(c =>
+        String.fromCharCode(c.codePointAt(0) - 0xE0000)
+    ).join('');
+    return id.length > 0 ? id : null;
 }
 
 /* =========================
@@ -161,21 +156,6 @@ async function moderateImages(imageUrls) {
 }
 
 /* =========================
-   🗑️ 削除ボタン生成
-   customIdにはUserIDを生で入れる（100文字制限対策）
-   フッターのエンコードとは別管理
-========================= */
-
-function buildDeleteRow(userId) {
-    const deleteButton = new ButtonBuilder()
-        .setCustomId(`mod_delete_${userId}`) // 生のUserID（18桁なので余裕で100文字以内）
-        .setLabel('削除')
-        .setStyle(ButtonStyle.Danger)
-        .setEmoji('🗑️');
-    return new ActionRowBuilder().addComponents(deleteButton);
-}
-
-/* =========================
    📍 Webhook取得（TTL＋失敗時キャッシュクリア＋リトライ）
 ========================= */
 
@@ -186,7 +166,6 @@ async function getOrCreateWebhook(channel) {
     const cacheKey = targetChannel.id;
     const cached = webhookCache.get(cacheKey);
 
-    // TTL内ならそのまま返す（API叩かない）
     if (cached && Date.now() - cached.timestamp < WEBHOOK_CACHE_TTL) {
         return cached.webhook;
     }
@@ -214,7 +193,6 @@ async function sendWebhook(channel, options) {
     try {
         return await webhook.send(options);
     } catch (e) {
-        // 送信失敗時はキャッシュクリアして1回リトライ
         if (cacheKey) webhookCache.delete(cacheKey);
         console.error(`[Webhook] ❌ 送信失敗、リトライします: ${e.message}`);
         try {
@@ -239,19 +217,18 @@ async function buildReplyPrefix(message) {
         const referencedMsg = await message.channel.messages.fetch(message.reference.messageId);
 
         let targetId = referencedMsg.author.id;
-        const match = referencedMsg.content?.match(USER_ID_FOOTER_REGEX);
-        if (referencedMsg.webhookId && match) targetId = decodeUserId(match[1]) ?? match[1];
+
+        // Webhookメッセージの場合はゼロ幅文字からUserIDを抽出
+        if (referencedMsg.webhookId) {
+            const extracted = extractUserId(referencedMsg.content);
+            if (extracted) targetId = extracted;
+        }
 
         let parentRaw = referencedMsg.content || "";
-        parentRaw = parentRaw.replace(USER_ID_FOOTER_REGEX, "").replace(/-#.*$/gm, "");
-
-        const currentHeaderRegex = /^> \[Reply to:\]\(https?:\/\/[^\)]+\) <@[0-9]+>\n> .*\n/;
-        parentRaw = parentRaw.replace(currentHeaderRegex, "");
-
-        const oldHeaderRegex = /^\[↩ [^\]]+\]\(https?:\/\/[^\)]+\)\n/;
-        parentRaw = parentRaw.replace(oldHeaderRegex, "");
-
-        parentRaw = parentRaw.trim();
+        // ゼロ幅文字を除去してプレビュー生成
+        parentRaw = [...parentRaw].filter(c =>
+            c.codePointAt(0) < 0xE0000 || c.codePointAt(0) > 0xE007F
+        ).join('').trim();
 
         const parentPreview = parentRaw.length > 80
             ? parentRaw.substring(0, 77).replace(/\n/g, ' ') + "..."
@@ -279,19 +256,21 @@ async function handlePseudoReply(message) {
     } catch { return false; }
 
     if (!referencedMsg.webhookId || referencedMsg.applicationId === TUPPERBOX_APP_ID) return false;
-    if (!referencedMsg.content?.match(USER_ID_FOOTER_REGEX)) return false;
+
+    // ゼロ幅文字でUserIDが埋め込まれているか確認
+    if (!extractUserId(referencedMsg.content)) return false;
 
     if (message.deletable) await message.delete().catch(() => {});
 
     const replyPrefix = await buildReplyPrefix(message);
-    const replyContent = `${replyPrefix}${recodeText(message.content)}\n-# 👤 ${encodeUserId(message.author.id)}`;
+    // メッセージ末尾にゼロ幅文字でUserIDを埋め込む（見えない）
+    const replyContent = `${replyPrefix}${recodeText(message.content)}${hideUserId(message.author.id)}`;
 
     const sendOptions = {
         content: replyContent,
         files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        components: [buildDeleteRow(message.author.id)],
         allowedMentions: { parse: [] }
     };
 
@@ -323,11 +302,10 @@ async function handleSensitivePost(message) {
     const cleanContent = (message.content || "").replace(SENSITIVE_TRIGGER_EMOJI, "").trim();
 
     const sendOptions = {
-        content: (cleanContent || "\u200b") + `\n-# 👤 ${encodeUserId(message.author.id)}`,
+        content: (cleanContent || "\u200b") + hideUserId(message.author.id),
         files,
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        components: [buildDeleteRow(message.author.id)],
         allowedMentions: { parse: [] }
     };
 
@@ -347,7 +325,6 @@ async function handleModerator(message) {
 
     const rawContent = message.content || "";
 
-    // Tupperbox優先
     if (TUPPERBOX_PREFIX_REGEX.test(rawContent)) return;
 
     // スパムチェックを最速で実行
@@ -417,14 +394,14 @@ async function instantDeleteAndRecode(message) {
     if (!finalContent) finalContent = "*(Message Removed)*";
 
     const replyPrefix = await buildReplyPrefix(message);
-    finalContent = `${replyPrefix}${finalContent}\n-# 👤 ${encodeUserId(message.author.id)}`;
+    // メッセージ末尾にゼロ幅文字でUserIDを埋め込む（見えない）
+    finalContent = `${replyPrefix}${finalContent}${hideUserId(message.author.id)}`;
 
     const sendOptions = {
         content: finalContent,
         files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        components: [buildDeleteRow(message.author.id)],
         allowedMentions: { parse: [] }
     };
 
@@ -433,32 +410,4 @@ async function instantDeleteAndRecode(message) {
     await sendWebhook(message.channel, sendOptions);
 }
 
-/* =========================
-   🗑️ 削除ボタンInteraction処理
-========================= */
-
-async function handleDeleteInteraction(interaction) {
-    if (!interaction.isButton()) return false;
-    if (!interaction.customId.startsWith('mod_delete_')) return false;
-
-    const originalUserId = interaction.customId.replace('mod_delete_', '');
-
-    const isSelf = interaction.user.id === originalUserId;
-    const isMod = hasModPermission(interaction.member);
-
-    if (!isSelf && !isMod) {
-        await interaction.reply({ content: '❌ 自分のメッセージか、Mod権限が必要です。', ephemeral: true });
-        return true;
-    }
-
-    try {
-        await interaction.message.delete();
-    } catch (e) {
-        await interaction.reply({ content: '❌ 削除に失敗しました。', ephemeral: true });
-        console.error(`[DeleteButton] ❌ ${e.message}`);
-    }
-
-    return true;
-}
-
-module.exports = { handleModerator, handleDeleteInteraction };
+module.exports = { handleModerator };
