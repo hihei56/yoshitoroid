@@ -25,23 +25,30 @@ const webhookCache = new Map();
 const WEBHOOK_CACHE_TTL = 24 * 60 * 60 * 1000;
 
 /* =========================
-   🔐 ゼロ幅文字でUserIDを隠す
+   🔐 ゼロ幅文字でUserIDを隠す (文字化け対策版)
 ========================= */
 
+// 0 と 1 に対応する見えない文字でバイナリエンコード
+const ZERO_WIDTH_MAP = { '0': '\u200B', '1': '\u200C' };
+const REVERSE_ZERO_WIDTH_MAP = { '\u200B': '0', '\u200C': '1' };
+
 function hideUserId(userId) {
-    return userId.split('').map(c =>
-        String.fromCodePoint(0xE0000 + c.charCodeAt(0))
-    ).join('');
+    // IDを2進数にして見えない文字に置換
+    const binary = BigInt(userId).toString(2);
+    return [...binary].map(bit => ZERO_WIDTH_MAP[bit]).join('');
 }
 
 function extractUserId(text) {
     if (!text) return null;
-    const id = [...text].filter(c =>
-        c.codePointAt(0) >= 0xE0000 && c.codePointAt(0) <= 0xE007F
-    ).map(c =>
-        String.fromCharCode(c.codePointAt(0) - 0xE0000)
-    ).join('');
-    return id.length > 0 ? id : null;
+    // メッセージ内の見えない文字を抽出
+    const bits = [...text]
+        .filter(c => REVERSE_ZERO_WIDTH_MAP[c])
+        .map(c => REVERSE_ZERO_WIDTH_MAP[c])
+        .join('');
+    if (!bits) return null;
+    try {
+        return BigInt('0b' + bits).toString();
+    } catch { return null; }
 }
 
 /* =========================
@@ -133,30 +140,7 @@ function recodeText(text, isReplyParent = false) {
 }
 
 /* =========================
-   🖼️ 画像モデレーション（上限4枚）
-========================= */
-
-async function moderateImages(imageUrls) {
-    if (!imageUrls.length) return false;
-    const limited = imageUrls.slice(0, 4);
-    try {
-        const results = await Promise.all(
-            limited.map(url =>
-                openai.moderations.create({
-                    model: "omni-moderation-latest",
-                    input: [{ type: "image_url", image_url: { url } }]
-                })
-            )
-        );
-        return results.some(r => r.results[0]?.categories?.sexual_minors);
-    } catch (e) {
-        console.error("[Image Mod Error]:", e.message);
-        return false;
-    }
-}
-
-/* =========================
-   📍 Webhook取得（TTL＋失敗時キャッシュクリア＋リトライ）
+   📍 Webhook取得
 ========================= */
 
 async function getOrCreateWebhook(channel) {
@@ -218,17 +202,14 @@ async function buildReplyPrefix(message) {
 
         let targetId = referencedMsg.author.id;
 
-        // Webhookメッセージの場合はゼロ幅文字からUserIDを抽出
         if (referencedMsg.webhookId) {
             const extracted = extractUserId(referencedMsg.content);
             if (extracted) targetId = extracted;
         }
 
         let parentRaw = referencedMsg.content || "";
-        // ゼロ幅文字を除去してプレビュー生成
-        parentRaw = [...parentRaw].filter(c =>
-            c.codePointAt(0) < 0xE0000 || c.codePointAt(0) > 0xE007F
-        ).join('').trim();
+        // 見えない文字を除去してプレビュー生成
+        parentRaw = [...parentRaw].filter(c => !REVERSE_ZERO_WIDTH_MAP[c]).join('').trim();
 
         const parentPreview = parentRaw.length > 80
             ? parentRaw.substring(0, 77).replace(/\n/g, ' ') + "..."
@@ -257,13 +238,11 @@ async function handlePseudoReply(message) {
 
     if (!referencedMsg.webhookId || referencedMsg.applicationId === TUPPERBOX_APP_ID) return false;
 
-    // ゼロ幅文字でUserIDが埋め込まれているか確認
     if (!extractUserId(referencedMsg.content)) return false;
 
     if (message.deletable) await message.delete().catch(() => {});
 
     const replyPrefix = await buildReplyPrefix(message);
-    // メッセージ末尾にゼロ幅文字でUserIDを埋め込む（見えない）
     const replyContent = `${replyPrefix}${recodeText(message.content)}${hideUserId(message.author.id)}`;
 
     const sendOptions = {
@@ -271,7 +250,7 @@ async function handlePseudoReply(message) {
         files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        allowedMentions: { parse: [] }
+        allowedMentions: { parse: ['users'] } // 通知を許可
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
@@ -306,7 +285,7 @@ async function handleSensitivePost(message) {
         files,
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        allowedMentions: { parse: [] }
+        allowedMentions: { parse: ['users'] } // 通知を許可
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
@@ -316,8 +295,27 @@ async function handleSensitivePost(message) {
 }
 
 /* =========================
-   🔥 メイン処理
+   🔥 メイン処理（画像モデレーション等）
 ========================= */
+
+async function moderateImages(imageUrls) {
+    if (!imageUrls.length) return false;
+    const limited = imageUrls.slice(0, 4);
+    try {
+        const results = await Promise.all(
+            limited.map(url =>
+                openai.moderations.create({
+                    model: "omni-moderation-latest",
+                    input: [{ type: "image_url", image_url: { url } }]
+                })
+            )
+        );
+        return results.some(r => r.results[0]?.categories?.sexual_minors);
+    } catch (e) {
+        console.error("[Image Mod Error]:", e.message);
+        return false;
+    }
+}
 
 async function handleModerator(message) {
     if (!message.content && !message.attachments.size) return;
@@ -327,7 +325,6 @@ async function handleModerator(message) {
 
     if (TUPPERBOX_PREFIX_REGEX.test(rawContent)) return;
 
-    // スパムチェックを最速で実行
     if (checkSpam(message.author.id)) {
         await message.delete().catch(() => {});
         return;
@@ -383,10 +380,6 @@ async function handleModerator(message) {
     if (pseudoHandled) return;
 }
 
-/* =========================
-   🚓 削除＋Webhook再送
-========================= */
-
 async function instantDeleteAndRecode(message) {
     if (message.deletable) await message.delete().catch(() => {});
 
@@ -394,7 +387,6 @@ async function instantDeleteAndRecode(message) {
     if (!finalContent) finalContent = "*(Message Removed)*";
 
     const replyPrefix = await buildReplyPrefix(message);
-    // メッセージ末尾にゼロ幅文字でUserIDを埋め込む（見えない）
     finalContent = `${replyPrefix}${finalContent}${hideUserId(message.author.id)}`;
 
     const sendOptions = {
@@ -402,7 +394,7 @@ async function instantDeleteAndRecode(message) {
         files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        allowedMentions: { parse: [] }
+        allowedMentions: { parse: ['users'] } // 通知を許可
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
