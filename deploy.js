@@ -78,6 +78,11 @@ const commands = [
         .setName('ranking')
         .setDescription('配信者の同時接続数ランキングを今すぐ更新する（デバッグモード限定）'),
 
+    // 6. タイムアウト一覧・延長
+    new SlashCommandBuilder()
+        .setName('timeoutlist')
+        .setDescription('現在タイムアウト中のメンバーを一覧表示し、タイムアウトを延長できます。'),
+
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);

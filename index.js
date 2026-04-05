@@ -3,7 +3,7 @@ process.on('uncaughtException', e => console.error('[Error]:', e));
 process.on('unhandledRejection', e => console.error('[Reject]:', e));
 
 require('dotenv').config();
-
+const { handleTimeoutList } = require('./timeoutlist'); // 上の方のrequire群に追加
 const { Client, GatewayIntentBits, Events } = require('discord.js');
 const { initScheduler } = require('./scheduler');
 const { handleSay } = require('./say');
@@ -71,6 +71,7 @@ client.on(Events.InteractionCreate, async i => {
     }
 
     try {
+        if (i.commandName === 'timeoutlist') await handleTimeoutList(i); // InteractionCreate内に追加
         if (i.commandName === 'dice')    await handleDeathmatch(i);
         if (i.commandName === 'say')     await handleSay(i);
         if (i.commandName === 'admin')   await handleAdmin(i);
