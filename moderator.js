@@ -28,19 +28,16 @@ const WEBHOOK_CACHE_TTL = 24 * 60 * 60 * 1000;
    🔐 ゼロ幅文字でUserIDを隠す (文字化け対策版)
 ========================= */
 
-// 0 と 1 に対応する見えない文字でバイナリエンコード
 const ZERO_WIDTH_MAP = { '0': '\u200B', '1': '\u200C' };
 const REVERSE_ZERO_WIDTH_MAP = { '\u200B': '0', '\u200C': '1' };
 
 function hideUserId(userId) {
-    // IDを2進数にして見えない文字に置換
     const binary = BigInt(userId).toString(2);
     return [...binary].map(bit => ZERO_WIDTH_MAP[bit]).join('');
 }
 
 function extractUserId(text) {
     if (!text) return null;
-    // メッセージ内の見えない文字を抽出
     const bits = [...text]
         .filter(c => REVERSE_ZERO_WIDTH_MAP[c])
         .map(c => REVERSE_ZERO_WIDTH_MAP[c])
@@ -208,7 +205,6 @@ async function buildReplyPrefix(message) {
         }
 
         let parentRaw = referencedMsg.content || "";
-        // 見えない文字を除去してプレビュー生成
         parentRaw = [...parentRaw].filter(c => !REVERSE_ZERO_WIDTH_MAP[c]).join('').trim();
 
         const parentPreview = parentRaw.length > 80
@@ -250,7 +246,7 @@ async function handlePseudoReply(message) {
         files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        allowedMentions: { parse: ['users'] } // 通知を許可
+        allowedMentions: { parse: ['users'] }
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
@@ -285,7 +281,7 @@ async function handleSensitivePost(message) {
         files,
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        allowedMentions: { parse: ['users'] } // 通知を許可
+        allowedMentions: { parse: ['users'] }
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
@@ -338,8 +334,9 @@ async function handleModerator(message) {
     const normalized = strippedContent.toLowerCase().replace(/\s+/g, "");
 
     const isLoliShota = LOLI_SHOTA_REGEX.test(normalized);
-    const isThreat = THREAT_REGEX.test(normalized);
-    const isDrug = DRUG_REGEX.test(normalized);
+    const isAge      = AGE_REGEX.test(normalized);       // ✅ 追加
+    const isThreat   = THREAT_REGEX.test(normalized);
+    const isDrug     = DRUG_REGEX.test(normalized);
 
     const images = [...message.attachments.values()]
         .filter(att => att.contentType?.startsWith('image/'))
@@ -368,7 +365,8 @@ async function handleModerator(message) {
         scores.violence > 0.9 ||
         scores['violence/graphic'] > 0.9;
 
-    if ((isLoliShota || isThreat || isDrug || isAiLoliDanger || isOtherHighDanger || imageResult) && !isExempt) {
+    // ✅ isAge を判定条件に追加
+    if ((isLoliShota || isAge || isThreat || isDrug || isAiLoliDanger || isOtherHighDanger || imageResult) && !isExempt) {
         await instantDeleteAndRecode(message);
         return;
     }
@@ -394,7 +392,7 @@ async function instantDeleteAndRecode(message) {
         files: [],
         username: message.member?.displayName || message.author.username,
         avatarURL: message.member?.displayAvatarURL({ dynamic: true }),
-        allowedMentions: { parse: ['users'] } // 通知を許可
+        allowedMentions: { parse: ['users'] }
     };
 
     if (message.channel.isThread()) sendOptions.threadId = message.channel.id;
