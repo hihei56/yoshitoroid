@@ -103,7 +103,7 @@ const AGE_REGEX = new RegExp([
 ].join("|"), "i");
 
 const THREAT_REGEX = new RegExp([
-    "死ね","しね","殺す","ころす","殺してやる",
+    "殺","死","死ね","しね","殺す","ころす","殺してやる",
     "爆破","爆殺","刺す","刺してやる",
     "kill\\s*you","i'll\\s*kill","gonna\\s*kill",
     "自殺しろ","死んでください"
